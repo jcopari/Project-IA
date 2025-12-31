@@ -130,10 +130,33 @@ typedef enum {
 #define Q_VALIDATE_PTR_OR_RETURN_NULL(ptr) \
     Q_VALIDATE_OR_RETURN_NULL((ptr) != NULL)
 
+// ============================================================================
+// Debug Print Macros (Only Active in DEBUG Mode)
+// ============================================================================
+
+// Debug print macro: Only prints in DEBUG mode, zero overhead in Release
+#ifdef DEBUG
+#define Q_DEBUG_PRINT(...) do { \
+    fprintf(stderr, __VA_ARGS__); \
+} while(0)
+#else
+#define Q_DEBUG_PRINT(...) ((void)0)
+#endif
+
+// Debug write to stderr (for direct write() calls)
+#ifdef DEBUG
+#define Q_DEBUG_WRITE(msg, len) do { \
+    write(2, msg, len); \
+} while(0)
+#else
+#define Q_DEBUG_WRITE(msg, len) ((void)0)
+#endif
+
 typedef enum {
-    Q_F32  = 0,
-    Q_Q8_0 = 1, // Pesos (Embeddings/Output)
-    Q_Q4_0 = 2  // Pesos (Dense Layers)
+    Q_TYPE_INVALID = 0,  // Zero DEVE ser erro explícito (Fail-Fast)
+    Q_F32  = 1,
+    Q_Q8_0 = 2, // Pesos (Embeddings/Output)
+    Q_Q4_0 = 3  // Pesos (Dense Layers)
 } q_dtype;
 
 // Q4_0 block structure (20 bytes: 16 bytes quantized data + 4 bytes scale)
@@ -156,8 +179,9 @@ typedef struct {
     uint32_t n_kv_heads;     // 4 bytes
     uint32_t max_seq_len;    // 4 bytes
     float    rope_freq_base; // 4 bytes
-    uint32_t reserved[6];    // 24 bytes reservados
-    // Total: 64 bytes (9*4 + 4 + 6*4 = 36 + 4 + 24 = 64)
+    float    rms_norm_eps;   // 4 bytes: RMSNorm epsilon for numerical stability
+    uint32_t reserved[5];    // 20 bytes reservados
+    // Total: 64 bytes (9*4 + 4 + 4 + 5*4 = 36 + 4 + 4 + 20 = 64)
 } __attribute__((packed, aligned(64))) q_model_header;
 
 // Tensor View (alinhado para SIMD)
@@ -245,6 +269,12 @@ typedef struct {
     q_tensor*    output;       // Output projection [vocab_size, dim]
     llama_layer* layers;       // Array contíguo de layers [n_layers]
     q_context*   ctx;          // Memory context (Tier 1/2/3)
+    
+    // RoPE pre-computation (Correção 2: Otimização crítica)
+    float*       rope_freqs;        // [head_dim/2] frequências base pré-calculadas
+    float*       rope_cos_cache;     // Opcional: [max_seq_len, head_dim] cache completo
+    float*       rope_sin_cache;     // Opcional: [max_seq_len, head_dim] cache completo
+    bool         rope_cache_enabled; // Flag se cache completo está disponível
 } llama_model;
 
 #endif // QORUS_TYPES_H

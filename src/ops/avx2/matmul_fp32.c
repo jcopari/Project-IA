@@ -26,7 +26,8 @@ static inline float hsum256_ps(__m256 v) {
 
 // Cache-blocked matrix transpose
 // Transposes src[rows, cols] to dst[cols, rows]
-static void transpose_blocked(
+// NOTE: Currently unused (we use simple transpose), but kept for future optimization
+static void __attribute__((unused)) transpose_blocked(
     const float* restrict src,
     float* restrict dst,
     uint32_t rows,
@@ -68,40 +69,33 @@ q_error_code q_matmul_f32_avx2(
     const uint32_t K = A->ne[1];
     const uint32_t N = B->ne[1];
     
-    // DEBUG: Print dimensions for diagnosis (always active for Release debugging)
+    // DEBUG: Print dimensions for diagnosis (only in DEBUG mode)
+    #ifdef DEBUG
     char debug_msg[256];
     int debug_len = snprintf(debug_msg, sizeof(debug_msg),
         "DEBUG: q_matmul_f32_avx2: A[%u,%u] @ B[%u,%u] -> C[%u,%u]\n",
         M, K, B->ne[0], N, C->ne[0], C->ne[1]);
     write(2, debug_msg, (size_t)debug_len);
+    #endif
     
-    // Validate dimensions (always print error for diagnosis)
+    // Validate dimensions
     if (M == 0) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_matmul_f32_avx2: M (A->ne[0]) is zero\n");
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_matmul_f32_avx2: M (A->ne[0]) is zero\n");
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
     }
     if (K == 0) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_matmul_f32_avx2: K (A->ne[1]) is zero\n");
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_matmul_f32_avx2: K (A->ne[1]) is zero\n");
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
     }
     if (N == 0) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_matmul_f32_avx2: N (B->ne[1]) is zero\n");
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_matmul_f32_avx2: N (B->ne[1]) is zero\n");
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
@@ -109,31 +103,22 @@ q_error_code q_matmul_f32_avx2(
     
     // Validate shape compatibility: A[M,K] @ B[K,N] → C[M,N]
     if (B->ne[0] != K) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_matmul_f32_avx2: B->ne[0] (%u) != K (%u)\n", B->ne[0], K);
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_matmul_f32_avx2: B->ne[0] (%u) != K (%u)\n", B->ne[0], K);
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
     }
     if (C->ne[0] != M) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_matmul_f32_avx2: C->ne[0] (%u) != M (%u)\n", C->ne[0], M);
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_matmul_f32_avx2: C->ne[0] (%u) != M (%u)\n", C->ne[0], M);
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
     }
     if (C->ne[1] != N) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_matmul_f32_avx2: C->ne[1] (%u) != N (%u)\n", C->ne[1], N);
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_matmul_f32_avx2: C->ne[1] (%u) != N (%u)\n", C->ne[1], N);
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
@@ -147,7 +132,7 @@ q_error_code q_matmul_f32_avx2(
     // If stride is not multiple of 32 bytes, elements may not be aligned
     bool A_needs_unaligned = (A->nb[0] % 32 != 0);
     bool B_needs_unaligned = (B->nb[0] % 32 != 0);
-    bool C_needs_unaligned = (C->nb[0] % 32 != 0);
+    // C_needs_unaligned not used (C is always written, alignment checked separately)
     
     // CRITICAL FIX: Only validate base pointer alignment for tensors that need aligned loads
     // For tensors with stride not multiple of 32 bytes, we'll use unaligned loads anyway
@@ -178,21 +163,20 @@ q_error_code q_matmul_f32_avx2(
     const size_t C_stride = C->nb[0] / sizeof(float);  // Row stride of C in elements
     
     // DEBUG: Print strides for diagnosis
+    #ifdef DEBUG
     char stride_debug[256];
     int stride_debug_len = snprintf(stride_debug, sizeof(stride_debug),
         "DEBUG: q_matmul_f32_avx2: strides A=%zu (K=%u), B=%zu (N=%u), C=%zu (N=%u)\n",
         A_stride, K, B_stride, N, C_stride, N);
     write(2, stride_debug, (size_t)stride_debug_len);
+    #endif
     
     // CRITICAL FIX: Validate strides are reasonable (prevent overflow)
     // For transposed tensors (B->nb[0] == sizeof(float)), B_stride = 1, which is valid
     // We need to check B->nb[1] (column stride) instead for transposed tensors
     if (A_stride < K) {
-        char err_msg[256];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_matmul_f32_avx2: A_stride (%zu) < K (%u)\n", A_stride, K);
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_matmul_f32_avx2: A_stride (%zu) < K (%u)\n", A_stride, K);
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
@@ -209,19 +193,17 @@ q_error_code q_matmul_f32_avx2(
     if (is_transposed) {
         // Transposed tensor: B_stride = 1 (row stride), but column stride should be >= K
         size_t B_col_stride = B->nb[1] / sizeof(float);
-        // DEBUG: Print transposed tensor info
+        #ifdef DEBUG
         char transposed_debug[256];
         int transposed_debug_len = snprintf(transposed_debug, sizeof(transposed_debug),
             "DEBUG: q_matmul_f32_avx2: Transposed B detected: B->nb[0]=%zu, B->nb[1]=%zu, B_col_stride=%zu, K=%u\n",
             B->nb[0], B->nb[1], B_col_stride, K);
         write(2, transposed_debug, (size_t)transposed_debug_len);
+        #endif
         
         if (B_col_stride < K) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: q_matmul_f32_avx2: B_col_stride (%zu) < K (%u) for transposed tensor\n", B_col_stride, K);
-            write(2, err_msg, (size_t)err_len);
             #ifdef DEBUG
+            fprintf(stderr, "ERROR: q_matmul_f32_avx2: B_col_stride (%zu) < K (%u) for transposed tensor\n", B_col_stride, K);
             abort();
             #endif
             return Q_ERR_INVALID_SIZE;
@@ -229,67 +211,78 @@ q_error_code q_matmul_f32_avx2(
     } else {
         // Normal tensor: row stride should be >= N
         if (B_stride < N) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: q_matmul_f32_avx2: B_stride (%zu) < N (%u)\n", B_stride, N);
-            write(2, err_msg, (size_t)err_len);
             #ifdef DEBUG
+            fprintf(stderr, "ERROR: q_matmul_f32_avx2: B_stride (%zu) < N (%u)\n", B_stride, N);
             abort();
             #endif
             return Q_ERR_INVALID_SIZE;
         }
     }
     if (C_stride < N) {
-        char err_msg[256];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_matmul_f32_avx2: C_stride (%zu) < N (%u)\n", C_stride, N);
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_matmul_f32_avx2: C_stride (%zu) < N (%u)\n", C_stride, N);
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
     }
     
-    // DEBUG: Print before transpose allocation
-    char pre_transpose_debug[128];
-    int pre_transpose_len = snprintf(pre_transpose_debug, sizeof(pre_transpose_debug),
-        "DEBUG: q_matmul_f32_avx2: Before transpose, N=%u, K=%u\n", N, K);
-    write(2, pre_transpose_debug, (size_t)pre_transpose_len);
-    
-    // Transpose B for cache efficiency (allocate in arena)
+    // Transpose B for cache efficiency (allocate in arena) - ONLY if not already transposed
     // B_T will be [N, K] (transposed from B[K, N])
     // B_T is stored row-major: B_T[j, k] = B[k, j]
-    size_t B_T_size = (size_t)N * (size_t)K * sizeof(float);
-    float* B_T_data = (float*)q_arena_alloc(ctx, B_T_size);
-    if (B_T_data == NULL) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_matmul_f32_avx2: Failed to allocate B_T buffer (%zu bytes)\n", B_T_size);
-        write(2, err_msg, (size_t)err_len);
-        return Q_ERR_ARENA_OOM;
-    }
+    float* B_T_data;
     
-    // DEBUG: Print after transpose allocation
-    char post_transpose_debug[128];
-    int post_transpose_len = snprintf(post_transpose_debug, sizeof(post_transpose_debug),
-        "DEBUG: q_matmul_f32_avx2: After transpose allocation, B_T_data=%p\n", (void*)B_T_data);
-    write(2, post_transpose_debug, (size_t)post_transpose_len);
-    
-    // Transpose B[K, N] to B_T[N, K]
-    // B[k, j] -> B_T[j, k]
-    // B_data[k * B_stride + j] -> B_T_data[j * K + k]
-    for (uint32_t k = 0; k < K; k++) {
-        for (uint32_t j = 0; j < N; j++) {
-            B_T_data[j * K + k] = B_data[k * B_stride + j];
+    if (is_transposed) {
+        // B is already transposed, use it directly
+        B_T_data = (float*)B_data;
+        #ifdef DEBUG
+        char transposed_skip_debug[128];
+        int transposed_skip_len = snprintf(transposed_skip_debug, sizeof(transposed_skip_debug),
+            "DEBUG: q_matmul_f32_avx2: B already transposed, skipping transpose\n");
+        write(2, transposed_skip_debug, (size_t)transposed_skip_len);
+        #endif
+    } else {
+        // B is not transposed, allocate and transpose
+        #ifdef DEBUG
+        char pre_transpose_debug[128];
+        int pre_transpose_len = snprintf(pre_transpose_debug, sizeof(pre_transpose_debug),
+            "DEBUG: q_matmul_f32_avx2: Before transpose, N=%u, K=%u\n", N, K);
+        write(2, pre_transpose_debug, (size_t)pre_transpose_len);
+        #endif
+        
+        size_t B_T_size = (size_t)N * (size_t)K * sizeof(float);
+        B_T_data = (float*)q_arena_alloc(ctx, B_T_size);
+        if (B_T_data == NULL) {
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: q_matmul_f32_avx2: Failed to allocate B_T buffer (%zu bytes)\n", B_T_size);
+            abort();
+            #endif
+            return Q_ERR_ARENA_OOM;
+        }
+        
+        #ifdef DEBUG
+        char post_transpose_debug[128];
+        int post_transpose_len = snprintf(post_transpose_debug, sizeof(post_transpose_debug),
+            "DEBUG: q_matmul_f32_avx2: After transpose allocation, B_T_data=%p\n", (void*)B_T_data);
+        write(2, post_transpose_debug, (size_t)post_transpose_len);
+        #endif
+        
+        // Transpose B[K, N] to B_T[N, K]
+        // B[k, j] -> B_T[j, k]
+        // B_data[k * B_stride + j] -> B_T_data[j * K + k]
+        for (uint32_t k = 0; k < K; k++) {
+            for (uint32_t j = 0; j < N; j++) {
+                B_T_data[j * K + k] = B_data[k * B_stride + j];
+            }
         }
     }
     
-    // DEBUG: Print before MatMul loop
+    #ifdef DEBUG
     char pre_loop_debug[128];
     int pre_loop_len = snprintf(pre_loop_debug, sizeof(pre_loop_debug),
         "DEBUG: q_matmul_f32_avx2: Before MatMul loop, M=%u, N=%u, K=%u, MATMUL_BLOCK_SIZE=%u\n",
         M, N, K, MATMUL_BLOCK_SIZE);
     write(2, pre_loop_debug, (size_t)pre_loop_len);
+    #endif
     
     // Cache-blocked matrix multiplication: C = A @ B
     // Using B_T for cache-friendly access: C[i,j] = sum_k(A[i,k] * B_T[j,k])
@@ -305,6 +298,7 @@ q_error_code q_matmul_f32_avx2(
             for (uint32_t ii = i; ii < i_limit; ii++) {
                 const float* A_row = A_data + (size_t)ii * A_stride;
                 
+                #ifdef DEBUG
                 // DEBUG: Check alignment of A_row
                 if (ii == i && j == 0) {
                     char align_debug[256];
@@ -313,10 +307,12 @@ q_error_code q_matmul_f32_avx2(
                         (void*)A_row, (uintptr_t)A_row % 32);
                     write(2, align_debug, (size_t)align_debug_len);
                 }
+                #endif
                 
                 for (uint32_t jj = j; jj < j_limit; jj++) {
                     const float* B_T_col = B_T_data + (size_t)jj * (size_t)K;
                     
+                    #ifdef DEBUG
                     // DEBUG: Check alignment of B_T_col
                     if (ii == i && jj == j) {
                         char align_debug[256];
@@ -325,6 +321,7 @@ q_error_code q_matmul_f32_avx2(
                             (void*)B_T_col, (uintptr_t)B_T_col % 32, K);
                         write(2, align_debug, (size_t)align_debug_len);
                     }
+                    #endif
                     
                     // Initialize accumulator
                     float dot_product = 0.0f;
@@ -332,6 +329,7 @@ q_error_code q_matmul_f32_avx2(
                     // Main loop: 4x unrolling (32 elements per iteration)
                     uint32_t k_vec = K & ~31U;
                     
+                    #ifdef DEBUG
                     // DEBUG: Print k_vec calculation
                     if (ii == i && jj == j) {
                         char kvec_debug[128];
@@ -340,6 +338,7 @@ q_error_code q_matmul_f32_avx2(
                             k_vec, K, K & ~31U);
                         write(2, kvec_debug, (size_t)kvec_debug_len);
                     }
+                    #endif
                     
                     if (k_vec > 0) {
                         // Initialize 4 accumulators (4x unrolling)
@@ -349,6 +348,7 @@ q_error_code q_matmul_f32_avx2(
                         __m256 acc3 = _mm256_setzero_ps();
                         
                         for (uint32_t k = 0; k < k_vec; k += 32) {
+                            #ifdef DEBUG
                             // DEBUG: Check alignment before loads (first iteration only)
                             if (k == 0 && ii == i && jj == j) {
                                 char load_debug[256];
@@ -358,6 +358,7 @@ q_error_code q_matmul_f32_avx2(
                                     (void*)(B_T_col + k), ((uintptr_t)(B_T_col + k) % 32));
                                 write(2, load_debug, (size_t)load_debug_len);
                             }
+                            #endif
                             
                             // Prefetch next iteration
                             if (k + PREFETCH_DISTANCE < K) {
@@ -412,6 +413,7 @@ q_error_code q_matmul_f32_avx2(
                         __m256 sum = _mm256_add_ps(sum01, sum23);
                         dot_product = hsum256_ps(sum);
                         
+                        #ifdef DEBUG
                         // DEBUG: Print after AVX2 loop
                         if (ii == i && jj == j) {
                             char post_avx_debug[128];
@@ -420,9 +422,11 @@ q_error_code q_matmul_f32_avx2(
                                 dot_product, k_vec, K);
                             write(2, post_avx_debug, (size_t)post_avx_len);
                         }
+                        #endif
                     }
                     
                     // Tail handling (scalar fallback for remainder)
+                    #ifdef DEBUG
                     // DEBUG: Print tail loop info
                     if (ii == i && jj == j && k_vec < K) {
                         char tail_debug[128];
@@ -431,11 +435,13 @@ q_error_code q_matmul_f32_avx2(
                             k_vec, K, K - k_vec);
                         write(2, tail_debug, (size_t)tail_len);
                     }
+                    #endif
                     
                     for (uint32_t k = k_vec; k < K; k++) {
                         dot_product += A_row[k] * B_T_col[k];
                     }
                     
+                    #ifdef DEBUG
                     // DEBUG: Print before store
                     if (ii == i && jj == j) {
                         char store_debug[128];
@@ -444,6 +450,7 @@ q_error_code q_matmul_f32_avx2(
                             dot_product, C_stride, jj);
                         write(2, store_debug, (size_t)store_len);
                     }
+                    #endif
                     
                     // Store result
                     C_data[(size_t)ii * C_stride + jj] = dot_product;

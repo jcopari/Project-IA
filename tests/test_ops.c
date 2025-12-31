@@ -180,14 +180,32 @@ static int test_rope(void) {
     for (uint32_t i = 0; i < N; i++) {
         x[i] = -1.0f + ((float)rand() / RAND_MAX) * 2.0f;
     }
+    
+    // CRITICAL FIX: AVX2 implementation expects duplicated layout [c0, c0, c1, c1, ...]
+    // Create arrays with duplicated layout for AVX2
+    float* cos_avx2 = (float*)aligned_alloc(Q_ALIGN, N * sizeof(float));
+    float* sin_avx2 = (float*)aligned_alloc(Q_ALIGN, N * sizeof(float));
+    if (!cos_avx2 || !sin_avx2) {
+        fprintf(stderr, "ERROR: Memory allocation failed\n");
+        abort();
+    }
+    
     for (uint32_t i = 0; i < N/2; i++) {
         float angle = (float)i * 0.1f;
-        cos[i] = cosf(angle);
-        sin[i] = sinf(angle);
+        float c = cosf(angle);
+        float s = sinf(angle);
+        // Duplicate for AVX2 layout: [c0, c0, c1, c1, ...]
+        cos_avx2[i * 2] = c;
+        cos_avx2[i * 2 + 1] = c;
+        sin_avx2[i * 2] = s;
+        sin_avx2[i * 2 + 1] = s;
+        // Also store in original arrays for reference implementation
+        cos[i] = c;
+        sin[i] = s;
     }
     
     rope_ref(x, cos, sin, output_ref, N);
-    q_rope_f32_avx2(x, cos, sin, output_test, N);
+    q_rope_f32_avx2(x, cos_avx2, sin_avx2, output_test, N);
     
     // Compare (use exact tolerances for RoPE - should be very precise)
     int errors = compare_results(output_ref, output_test, N,
@@ -203,6 +221,8 @@ static int test_rope(void) {
     free(x);
     free(cos);
     free(sin);
+    free(cos_avx2);
+    free(sin_avx2);
     free(output_ref);
     free(output_test);
     

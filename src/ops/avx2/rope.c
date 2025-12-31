@@ -48,24 +48,11 @@ q_error_code q_rope_f32_avx2(
         // 1. Load Data: [x0, y0, x1, y1, x2, y2, x3, y3]
         __m256 src = _mm256_load_ps(x + i * 8);
         
-        // 2. Load Cos/Sin: [c0, c1, c2, c3] -> Duplicate to [c0, c0, c1, c1, c2, c2, c3, c3]
-        // Load 128-bit (4 floats)
-        __m128 c_small = _mm_load_ps(cos + i * 4);
-        __m128 s_small = _mm_load_ps(sin + i * 4);
-        
-        // Expand to 256-bit (duplicate 128-bit lane)
-        // [c0, c1, c2, c3, c0, c1, c2, c3]
-        __m256 c_dup = _mm256_castps128_ps256(c_small);
-        c_dup = _mm256_insertf128_ps(c_dup, c_small, 1);
-        
-        __m256 s_dup = _mm256_castps128_ps256(s_small);
-        s_dup = _mm256_insertf128_ps(s_dup, s_small, 1);
-        
-        // Shuffle to get [c0, c0, c1, c1, c2, c2, c3, c3]
-        // CORRECTED: Use setr (reverse order) to get indices 0,0,1,1,2,2,3,3
-        __m256i shuf_mask = _mm256_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3);
-        __m256 cos_vec = _mm256_permutevar8x32_ps(c_dup, shuf_mask);
-        __m256 sin_vec = _mm256_permutevar8x32_ps(s_dup, shuf_mask);
+        // CORREÇÃO 3: Load Cos/Sin diretamente (layout já está correto: [c0, c0, c1, c1, c2, c2, c3, c3])
+        // REMOVIDO: Toda lógica de load_ps(128-bit) + cast + insert + permute
+        // O produtor (llama3.c) já garante o layout duplicado
+        __m256 cos_vec = _mm256_load_ps(cos + i * 8);
+        __m256 sin_vec = _mm256_load_ps(sin + i * 8);
         
         // 3. Create Swapped Vector: [y0, x0, y1, x1, y2, x2, y3, x3]
         // Permute mask: 0xB1 = 10 11 00 01 (Swap adjacent pairs)
@@ -88,13 +75,14 @@ q_error_code q_rope_f32_avx2(
     }
     
     // Handle remaining pairs (if N % 8 != 0)
+    // CORREÇÃO 3: Layout duplicado - usar índice * 2
     const uint32_t remaining_start = vec_count * 8;
     for (uint32_t i = remaining_start; i < N; i += 2) {
         float x_val = x[i];
         float y_val = x[i + 1];
         uint32_t pair_idx = i / 2;
-        float c = cos[pair_idx];
-        float s = sin[pair_idx];
+        float c = cos[pair_idx * 2]; // Layout duplicado: usar índice * 2
+        float s = sin[pair_idx * 2];
         
         output[i] = x_val * c - y_val * s;
         output[i + 1] = y_val * c + x_val * s;

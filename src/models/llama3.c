@@ -14,6 +14,41 @@
     (void)_q_write_result; \
 } while (0)
 
+// ============================================================================
+// Correção 1: Estrutura de Scratchpad Reutilizável
+// ============================================================================
+
+// Estrutura de scratchpad reutilizável para uma camada
+// Elimina alocação linear O(L) na arena
+typedef struct {
+    // Buffers principais
+    float* attn_out;
+    float* mlp_out;
+    float* x_norm;
+    float* x_norm_mlp;
+    
+    // Buffers de atenção
+    float* q_buf;
+    float* k_buf;
+    float* v_buf;
+    float* q_rope_buf;
+    float* k_rope_buf;
+    float* cos_buf;
+    float* sin_buf;
+    float* scores_buf;
+    float* q_heads;
+    float* k_heads;
+    float* v_heads;
+    float* attn_head_buf;
+    float* k_t_buf;
+    
+    // Buffers MLP
+    float* gate_buf;
+    float* up_buf;
+    float* mul_buf;
+    float* gate_silu;
+} layer_scratchpad;
+
 // FASE 3.2: Build model graph from mmap'd .qorus file
 // Creates tensor views pointing to data in mmap (zero-copy)
 
@@ -122,20 +157,17 @@ static q_tensor* create_tensor_view(
         return NULL;
     }
     
-    // CRITICAL FIX: Zero-initialize entire tensor structure to prevent
-    // uninitialized memory corruption. This ensures all fields (including
-    // 'type') start with known values, preventing Q_ERR_INVALID_DTYPE errors.
-    // Time Complexity: O(1) - single memset call
+    // CRITICAL FIX (Correção 4): Inicializar explicitamente, NÃO usar memset
+    // Zero não pode ser valor válido (Q_TYPE_INVALID = 0)
+    // Time Complexity: O(1) - inicialização explícita
     // Space Complexity: O(1) - no additional memory
-    memset(tensor, 0, sizeof(q_tensor));
-    
-    // Initialize tensor view
     tensor->data = data_ptr;
     tensor->scales = NULL;
     tensor->ne[0] = ne0;
     tensor->ne[1] = ne1;
     tensor->ne[2] = ne2;
     tensor->ne[3] = ne3;
+    tensor->type = type;  // CRÍTICO: definir ANTES de calcular strides
     
     // Calculate strides (Row-Major Convention)
     if (type == Q_F32) {
@@ -181,21 +213,18 @@ static q_tensor* create_tensor_view(
         return NULL;
     }
     
-    tensor->type = type;
     strncpy(tensor->name, name, sizeof(tensor->name) - 1);
     tensor->name[sizeof(tensor->name) - 1] = '\0';
     
-    // CRITICAL VALIDATION: Verify type was set correctly
-    // This catches any memory corruption or initialization bugs immediately
-    if (tensor->type != type) {
+    // CRITICAL VALIDATION (Correção 4): Tipo deve ser válido (não Q_TYPE_INVALID)
+    if (tensor->type == Q_TYPE_INVALID || tensor->type != type) {
         #ifdef DEBUG
-        fprintf(stderr, "ERROR: create_tensor_view: type corruption detected!\n");
+        fprintf(stderr, "ERROR: create_tensor_view: invalid type!\n");
         fprintf(stderr, "  Expected type: %d, Got type: %d\n", type, tensor->type);
         fprintf(stderr, "  Tensor pointer: %p\n", (void*)tensor);
         abort();
         #endif
-        // In Release, return NULL to indicate failure
-        return NULL;
+        return NULL; // Fail-fast
     }
     
     return tensor;
@@ -242,7 +271,15 @@ q_error_code llama_build_graph(q_context* restrict ctx, llama_model* restrict mo
     model->config.n_kv_heads = ctx->header->n_kv_heads;
     model->config.max_seq_len = ctx->header->max_seq_len;
     model->config.rope_theta = ctx->header->rope_freq_base;  // rope_freq_base stored as rope_theta
-    model->config.rms_norm_eps = 1e-6f;  // Default Llama-3 epsilon
+    
+    // Read rms_norm_eps from header if available (version >= 2), otherwise use default
+    // Llama 2 uses 1e-6, Llama 3 uses 1e-5
+    // Default to 1e-5 (Llama-3) for better compatibility
+    if (ctx->header->version >= 2 && ctx->header->rms_norm_eps > 0.0f) {
+        model->config.rms_norm_eps = ctx->header->rms_norm_eps;
+    } else {
+        model->config.rms_norm_eps = 1e-5f;  // Default Llama-3 epsilon (more conservative)
+    }
     
     // Set context pointer
     model->ctx = ctx;
@@ -275,26 +312,12 @@ q_error_code llama_build_graph(q_context* restrict ctx, llama_model* restrict mo
     
     // CRITICAL VALIDATION: Verify type was set correctly immediately after creation
     // This catches any initialization bugs before they cause runtime errors
-    // Store pointer and type for later validation
-    volatile q_tensor* token_embd_check = model->token_embd;
-    volatile q_dtype type_check = token_embd_check->type;
-    
-    // DEBUG: Print type immediately after creation (for diagnosis)
-    char create_msg[128];
-    int create_len = snprintf(create_msg, sizeof(create_msg),
-        "DEBUG: llama_build_graph: Created token_embd, type = %d (expected %d), ptr = %p\n",
-        (int)type_check, (int)Q_F32, (void*)token_embd_check);
-    Q_WRITE_STDERR( create_msg, (size_t)create_len);
-    
-    if (type_check != Q_F32) {
-        char err_msg[256];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: llama_build_graph: token_embd->type = %d, expected Q_F32 (%d)\n"
-            "  token_embd pointer: %p\n",
-            (int)type_check, (int)Q_F32,
-            (void*)token_embd_check);
-        Q_WRITE_STDERR( err_msg, (size_t)err_len);
+    if (model->token_embd->type != Q_F32) {
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: llama_build_graph: token_embd->type = %d, expected Q_F32 (%d)\n"
+            "  token_embd pointer: %p\n",
+            (int)model->token_embd->type, (int)Q_F32,
+            (void*)model->token_embd);
         abort();
         #endif
         return Q_ERR_INVALID_DTYPE;
@@ -534,6 +557,49 @@ q_error_code llama_build_graph(q_context* restrict ctx, llama_model* restrict mo
         offset += w_down_size;
     }
     
+    // ============================================================================
+    // Correção 2: Pré-calcular frequências RoPE (elimina powf do hot path)
+    // ============================================================================
+    // head_dim já foi calculado acima, reutilizar
+    uint32_t num_pairs = head_dim / 2;
+    
+    // Pré-calcular frequências base (invariantes do modelo)
+    model->rope_freqs = (float*)q_arena_alloc(ctx, num_pairs * sizeof(float));
+    if (model->rope_freqs == NULL) {
+        return Q_ERR_ARENA_OOM;
+    }
+    
+    for (uint32_t i = 0; i < num_pairs; i++) {
+        float freq_exp = -2.0f * (float)i / (float)head_dim;
+        model->rope_freqs[i] = powf(model->config.rope_theta, freq_exp);
+    }
+    
+    // Opcional: Pré-calcular cache completo (trade-off memória vs velocidade)
+    model->rope_cache_enabled = false;
+    model->rope_cos_cache = NULL;
+    model->rope_sin_cache = NULL;
+    
+    if (model->config.max_seq_len <= 8192) { // Limite razoável para cache
+        size_t cache_size = (size_t)model->config.max_seq_len * head_dim * sizeof(float);
+        model->rope_cos_cache = (float*)q_arena_alloc(ctx, cache_size);
+        model->rope_sin_cache = (float*)q_arena_alloc(ctx, cache_size);
+        
+        if (model->rope_cos_cache != NULL && model->rope_sin_cache != NULL) {
+            for (uint32_t pos = 0; pos < model->config.max_seq_len; pos++) {
+                for (uint32_t i = 0; i < num_pairs; i++) {
+                    float theta = model->rope_freqs[i] * (float)pos; // SEM powf!
+                    float c = cosf(theta);
+                    float s = sinf(theta);
+                    model->rope_cos_cache[pos * head_dim + i * 2] = c;
+                    model->rope_cos_cache[pos * head_dim + i * 2 + 1] = c;
+                    model->rope_sin_cache[pos * head_dim + i * 2] = s;
+                    model->rope_sin_cache[pos * head_dim + i * 2 + 1] = s;
+                }
+            }
+            model->rope_cache_enabled = true;
+        }
+    }
+    
     return Q_OK;
 }
 
@@ -604,31 +670,157 @@ static float* get_kv_cache_ptr(
     return (float*)((uint8_t*)ctx->kv_buffer + offset);
 }
 
+// ============================================================================
+// Correção 1: Funções auxiliares do Scratchpad
+// ============================================================================
+
+// Calcular tamanho máximo necessário para scratchpad
+static size_t calculate_layer_scratchpad_size(const llama_config* config, uint32_t seq_len) {
+    uint32_t dim = config->dim;
+    uint32_t hidden_dim = config->hidden_dim;
+    uint32_t head_dim = dim / config->n_heads;
+    uint32_t n_heads = config->n_heads;
+    uint32_t n_kv_heads = config->n_kv_heads;
+    
+    size_t buf_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)dim * sizeof(float));
+    size_t hidden_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)hidden_dim * sizeof(float));
+    size_t head_dim_size = Q_ALIGN_SIZE((size_t)head_dim * sizeof(float));
+    size_t scores_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)seq_len * sizeof(float));
+    size_t q_per_head_size = Q_ALIGN_SIZE((size_t)seq_len * head_dim * sizeof(float));
+    size_t kv_dim = (size_t)n_kv_heads * head_dim;
+    size_t kv_buf_size = Q_ALIGN_SIZE((size_t)seq_len * kv_dim * sizeof(float));
+    
+    return buf_size * 4 +                    // attn_out, mlp_out, x_norm, x_norm_mlp
+           buf_size +                         // q_buf
+           kv_buf_size * 2 +                  // k_buf, v_buf
+           buf_size * 2 +                     // q_rope_buf, k_rope_buf
+           head_dim_size * 2 +                // cos_buf, sin_buf
+           scores_size +                      // scores_buf
+           q_per_head_size * n_heads +        // q_heads
+           q_per_head_size * n_kv_heads * 2 + // k_heads, v_heads
+           q_per_head_size +                  // attn_head_buf
+           q_per_head_size +                  // k_t_buf
+           hidden_size * 4;                   // gate_buf, up_buf, mul_buf, gate_silu
+}
+
+// Inicializar scratchpad a partir de bloco de memória contíguo
+static void init_layer_scratchpad(
+    layer_scratchpad* scratch,
+    uint8_t* mem_base,
+    const llama_config* config,
+    uint32_t seq_len
+) {
+    uint32_t dim = config->dim;
+    uint32_t hidden_dim = config->hidden_dim;
+    uint32_t head_dim = dim / config->n_heads;
+    uint32_t n_heads = config->n_heads;
+    uint32_t n_kv_heads = config->n_kv_heads;
+    
+    size_t offset = 0;
+    size_t buf_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)dim * sizeof(float));
+    size_t hidden_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)hidden_dim * sizeof(float));
+    size_t head_dim_size = Q_ALIGN_SIZE((size_t)head_dim * sizeof(float));
+    size_t scores_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)seq_len * sizeof(float));
+    size_t q_per_head_size = Q_ALIGN_SIZE((size_t)seq_len * head_dim * sizeof(float));
+    size_t kv_dim = (size_t)n_kv_heads * head_dim;
+    size_t kv_buf_size = Q_ALIGN_SIZE((size_t)seq_len * kv_dim * sizeof(float));
+    
+    scratch->attn_out = (float*)(mem_base + offset);
+    offset += buf_size;
+    
+    scratch->mlp_out = (float*)(mem_base + offset);
+    offset += buf_size;
+    
+    scratch->x_norm = (float*)(mem_base + offset);
+    offset += buf_size;
+    
+    scratch->x_norm_mlp = (float*)(mem_base + offset);
+    offset += buf_size;
+    
+    scratch->q_buf = (float*)(mem_base + offset);
+    offset += buf_size;
+    
+    scratch->k_buf = (float*)(mem_base + offset);
+    offset += kv_buf_size;
+    
+    scratch->v_buf = (float*)(mem_base + offset);
+    offset += kv_buf_size;
+    
+    scratch->q_rope_buf = (float*)(mem_base + offset);
+    offset += buf_size;
+    
+    scratch->k_rope_buf = (float*)(mem_base + offset);
+    offset += buf_size;
+    
+    scratch->cos_buf = (float*)(mem_base + offset);
+    offset += head_dim_size;
+    
+    scratch->sin_buf = (float*)(mem_base + offset);
+    offset += head_dim_size;
+    
+    scratch->scores_buf = (float*)(mem_base + offset);
+    offset += scores_size;
+    
+    scratch->q_heads = (float*)(mem_base + offset);
+    offset += q_per_head_size * n_heads;
+    
+    scratch->k_heads = (float*)(mem_base + offset);
+    offset += q_per_head_size * n_kv_heads;
+    
+    scratch->v_heads = (float*)(mem_base + offset);
+    offset += q_per_head_size * n_kv_heads;
+    
+    scratch->attn_head_buf = (float*)(mem_base + offset);
+    offset += q_per_head_size;
+    
+    scratch->k_t_buf = (float*)(mem_base + offset);
+    offset += q_per_head_size;
+    
+    scratch->gate_buf = (float*)(mem_base + offset);
+    offset += hidden_size;
+    
+    scratch->up_buf = (float*)(mem_base + offset);
+    offset += hidden_size;
+    
+    scratch->mul_buf = (float*)(mem_base + offset);
+    offset += hidden_size;
+    
+    scratch->gate_silu = (float*)(mem_base + offset);
+    // offset += hidden_size; // Não necessário, último buffer
+}
+
+// ============================================================================
+// Correção 2: Refatorar generate_rope_cos_sin para usar pré-cálculo
+// ============================================================================
+
 // Helper: Generate RoPE cos/sin tables for a specific position
-// Generates cos/sin values for head_dim/2 pairs, duplicated for AVX2
-// Formula: theta_i = rope_theta^(-2i/head_dim) * pos
+// CORRIGIDO: Usa frequências pré-calculadas (elimina powf do hot path)
 // Output: cos_buf[head_dim], sin_buf[head_dim] (duplicated layout: [c0,c0,c1,c1,...])
 static q_error_code generate_rope_cos_sin(
-    float rope_theta,
+    const llama_model* restrict model,  // NOVO: recebe model completo
     uint32_t head_dim,
     uint32_t pos,
     float* restrict cos_buf,  // Output [head_dim], 32-byte aligned
     float* restrict sin_buf   // Output [head_dim], 32-byte aligned
 ) {
+    Q_VALIDATE_PTR_OR_RETURN(model, Q_ERR_INVALID_ARG);
     Q_VALIDATE_PTR_OR_RETURN(cos_buf, Q_ERR_INVALID_ARG);
     Q_VALIDATE_PTR_OR_RETURN(sin_buf, Q_ERR_INVALID_ARG);
     Q_VALIDATE_NONZERO_OR_RETURN(head_dim, Q_ERR_INVALID_SIZE);
     Q_VALIDATE_MULTIPLE_OR_RETURN(head_dim, 2, Q_ERR_INVALID_SIZE); // Must be even
     
+    // Se cache completo disponível, apenas lookup (O(1))
+    if (model->rope_cache_enabled && pos < model->config.max_seq_len) {
+        memcpy(cos_buf, model->rope_cos_cache + pos * head_dim, head_dim * sizeof(float));
+        memcpy(sin_buf, model->rope_sin_cache + pos * head_dim, head_dim * sizeof(float));
+        return Q_OK;
+    }
+    
+    // Caso contrário, calcular apenas multiplicação escalar (SEM powf!)
     const uint32_t num_pairs = head_dim / 2;
     
-    // Generate cos/sin for each pair
     for (uint32_t i = 0; i < num_pairs; i++) {
-        // Calculate frequency: theta_i = rope_theta^(-2i/head_dim)
-        float freq_exp = -2.0f * (float)i / (float)head_dim;
-        float theta = powf(rope_theta, freq_exp) * (float)pos;
-        
-        // Calculate cos and sin
+        float theta = model->rope_freqs[i] * (float)pos; // SEM powf!
         float c = cosf(theta);
         float s = sinf(theta);
         
@@ -655,35 +847,9 @@ static q_error_code token_embedding_lookup(
     Q_VALIDATE_PTR_OR_RETURN(output, Q_ERR_INVALID_ARG);
     Q_VALIDATE_NONZERO_OR_RETURN(seq_len, Q_ERR_INVALID_SIZE);
     
-    // CRITICAL DEBUG: Print type at function entry (for diagnosis)
-    volatile q_dtype type_at_entry = token_embd->type;
-    char entry_msg[256];
-    int entry_len = snprintf(entry_msg, sizeof(entry_msg),
-        "DEBUG: token_embedding_lookup: Entry, token_embd->type = %d (expected %d), ptr = %p\n",
-        (int)type_at_entry, (int)Q_F32, (void*)token_embd);
-    Q_WRITE_STDERR( entry_msg, (size_t)entry_len);
-    
-    // CRITICAL DEBUG: Always print error details (critical safety check)
-    if (type_at_entry != Q_F32) {
-        // Use direct write to stderr to ensure message is printed
-        char msg[512];
-        int len = snprintf(msg, sizeof(msg),
-            "ERROR: token_embedding_lookup: token_embd->type = %d, expected Q_F32 (%d)\n"
-            "  token_embd pointer: %p\n"
-            "  token_embd->data: %p\n"
-            "  token_embd->ne[0]=%u, ne[1]=%u\n"
-            "  token_embd->name: %.32s\n",
-            (int)type_at_entry, (int)Q_F32,
-            (void*)token_embd,
-            (void*)token_embd->data,
-            token_embd->ne[0], token_embd->ne[1],
-            token_embd->name);
-        Q_WRITE_STDERR( msg, (size_t)len);  // Write directly to stderr (fd 2)
-        #ifdef DEBUG
-        abort();
-        #endif
-        return Q_ERR_INVALID_DTYPE;
-    }
+    // NOTE: token_embd->type is validated in llama_build_graph()
+    // Type validation here is redundant unless arena is reset externally
+    // AddressSanitizer will catch memory corruption in DEBUG mode
     
     uint32_t vocab_size = token_embd->ne[0];
     uint32_t dim = token_embd->ne[1];
@@ -707,53 +873,45 @@ static q_error_code token_embedding_lookup(
 
 // Helper: Single layer forward pass
 // Implements: Attention block + MLP block with residuals
+// CORRIGIDO: Usa scratchpad reutilizável (Correção 1)
 static q_error_code llama_layer_forward(
     llama_layer* restrict layer,
     q_context* restrict ctx,
+    const llama_model* restrict model,  // NOVO: necessário para RoPE pré-calculado
     const llama_config* restrict config,
     const float* restrict x,           // Input [seq_len, dim]
     float* restrict output,            // Output [seq_len, dim]
     uint32_t layer_idx,
     uint32_t seq_len,
-    uint32_t pos
+    uint32_t pos,
+    layer_scratchpad* restrict scratch  // NOVO: scratchpad reutilizável
 );
 
 // Helper: Attention forward pass with GQA support
+// CORRIGIDO: Usa scratchpad reutilizável (Correção 1)
 static q_error_code llama_attention_forward(
     llama_layer* restrict layer,
     q_context* restrict ctx,
+    const llama_model* restrict model,  // NOVO: necessário para RoPE pré-calculado
     const llama_config* restrict config,
     const float* restrict x,           // Input [seq_len, dim]
     float* restrict output,            // Output [seq_len, dim]
     uint32_t layer_idx,
     uint32_t seq_len,
-    uint32_t pos
+    uint32_t pos,
+    layer_scratchpad* restrict scratch  // NOVO: scratchpad reutilizável
 ) {
     uint32_t dim = config->dim;
     uint32_t n_heads = config->n_heads;
     uint32_t n_kv_heads = config->n_kv_heads;
     uint32_t head_dim = dim / n_heads;
-    // uint32_t q_per_kv = n_heads / n_kv_heads;  // GQA replication factor (TODO: use in attention computation)
-    (void)layer_idx;  // TODO: use for KV cache access
-    (void)pos;        // TODO: use for RoPE and KV cache update
     
-    // Allocate temporary buffers from arena
-    size_t qkv_size = (size_t)seq_len * (size_t)dim * sizeof(float);
-    qkv_size = Q_ALIGN_SIZE(qkv_size);
-    
-    // CRITICAL FIX: Allocate separate buffer for x_norm to avoid aliasing
-    float* x_norm = (float*)q_arena_alloc(ctx, qkv_size);
-    float* q_buf = (float*)q_arena_alloc(ctx, qkv_size);
-    float* k_buf = (float*)q_arena_alloc(ctx, qkv_size);
-    float* v_buf = (float*)q_arena_alloc(ctx, qkv_size);
-    float* attn_out = (float*)q_arena_alloc(ctx, qkv_size);
-    
-    if (x_norm == NULL || q_buf == NULL || k_buf == NULL || v_buf == NULL || attn_out == NULL) {
-        return Q_ERR_ARENA_OOM;
-    }
+    // CORREÇÃO 1: Usar scratchpad em vez de q_arena_alloc
+    // REMOVIDO: Todas as alocações q_arena_alloc
+    // USAR: scratch->x_norm, scratch->q_buf, etc.
     
     // Pre-attention RMSNorm: x -> x_norm
-    q_error_code ret = q_rmsnorm_f32_avx2(x, (const float*)layer->attn_norm->data, x_norm, dim, config->rms_norm_eps);
+    q_error_code ret = q_rmsnorm_f32_avx2(x, (const float*)layer->attn_norm->data, scratch->x_norm, dim, config->rms_norm_eps);
     if (ret != Q_OK) return ret;
     
     // Q/K/V projections using GEMV (Q4_0 weights)
@@ -762,22 +920,16 @@ static q_error_code llama_attention_forward(
     // This is equivalent to MatMul but optimized for Q4_0 weights
     
     // Q projection: x_norm @ wq -> q_buf [seq_len, dim]
-    // DEBUG: Print dimensions for diagnosis
-    char q_debug[256];
-    int q_debug_len = snprintf(q_debug, sizeof(q_debug),
-        "DEBUG: Q projection: wq->ne[0]=%u, wq->ne[1]=%u, dim=%u, dim%%32=%u\n",
-        layer->wq->ne[0], layer->wq->ne[1], dim, dim % 32);
-    Q_WRITE_STDERR( q_debug, (size_t)q_debug_len);
     
     for (uint32_t i = 0; i < seq_len; i++) {
-        const float* x_row = x_norm + (size_t)i * dim;
-        float* q_row = q_buf + (size_t)i * dim;
+        const float* x_row = scratch->x_norm + (size_t)i * dim;
+        float* q_row = scratch->q_buf + (size_t)i * dim;
         ret = q_gemv_q4_f32_avx2(layer->wq, x_row, q_row);
         if (ret != Q_OK) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: Q projection failed at row %u: ret=%d\n", i, ret);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: Q projection failed at row %u: ret=%d\n", i, ret);
+            abort();
+            #endif
             return ret;
         }
     }
@@ -788,52 +940,37 @@ static q_error_code llama_attention_forward(
     // dim is validated to be multiple of 32 in llama_build_graph, so this should be OK
     
     for (uint32_t i = 0; i < seq_len; i++) {
-        const float* x_row = x_norm + (size_t)i * dim;
-        float* k_row = k_buf + (size_t)i * kv_dim;
+        const float* x_row = scratch->x_norm + (size_t)i * dim;
+        float* k_row = scratch->k_buf + (size_t)i * kv_dim;
         ret = q_gemv_q4_f32_avx2(layer->wk, x_row, k_row);
         if (ret != Q_OK) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: K projection failed at row %u: ret=%d, dim=%u, kv_dim=%u\n",
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: K projection failed at row %u: ret=%d, dim=%u, kv_dim=%u\n",
                 i, ret, dim, kv_dim);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            abort();
+            #endif
             return ret;
         }
     }
     
     // V projection: x_norm @ wv -> v_buf [seq_len, n_kv_heads * head_dim]
     for (uint32_t i = 0; i < seq_len; i++) {
-        const float* x_row = x_norm + (size_t)i * dim;
-        float* v_row = v_buf + (size_t)i * kv_dim;
+        const float* x_row = scratch->x_norm + (size_t)i * dim;
+        float* v_row = scratch->v_buf + (size_t)i * kv_dim;
         ret = q_gemv_q4_f32_avx2(layer->wv, x_row, v_row);
         if (ret != Q_OK) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: V projection failed at row %u: ret=%d, dim=%u, kv_dim=%u\n",
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: V projection failed at row %u: ret=%d, dim=%u, kv_dim=%u\n",
                 i, ret, dim, kv_dim);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            abort();
+            #endif
             return ret;
         }
     }
     
-    // Allocate buffers for RoPE cos/sin and attention computation
-    size_t head_dim_size = (size_t)head_dim * sizeof(float);
-    head_dim_size = Q_ALIGN_SIZE(head_dim_size);
-    
-    float* cos_buf = (float*)q_arena_alloc(ctx, head_dim_size);
-    float* sin_buf = (float*)q_arena_alloc(ctx, head_dim_size);
-    float* q_rope_buf = (float*)q_arena_alloc(ctx, qkv_size);
-    float* k_rope_buf = (float*)q_arena_alloc(ctx, qkv_size);
-    
-    // Allocate buffers for attention scores and probs
-    size_t scores_size = (size_t)seq_len * (size_t)seq_len * sizeof(float);
-    scores_size = Q_ALIGN_SIZE(scores_size);
-    float* scores_buf = (float*)q_arena_alloc(ctx, scores_size);
-    
-    if (cos_buf == NULL || sin_buf == NULL || q_rope_buf == NULL || 
-        k_rope_buf == NULL || scores_buf == NULL) {
-        return Q_ERR_ARENA_OOM;
-    }
+    // CORREÇÃO 1: Buffers já alocados no scratchpad
+    // REMOVIDO: Todas as alocações q_arena_alloc
+    // USAR: scratch->cos_buf, scratch->sin_buf, scratch->q_rope_buf, etc.
     
     // Apply RoPE to Q and K (per head, per token)
     // Q: [seq_len, n_heads, head_dim] -> reshape to [seq_len * n_heads, head_dim]
@@ -841,25 +978,25 @@ static q_error_code llama_attention_forward(
     for (uint32_t t = 0; t < seq_len; t++) {
         uint32_t token_pos = pos + t;  // Absolute position in sequence
         
-        // Generate RoPE cos/sin for this position
-        ret = generate_rope_cos_sin(config->rope_theta, head_dim, token_pos, cos_buf, sin_buf);
+        // CORREÇÃO 2: Generate RoPE cos/sin usando pré-cálculo
+        ret = generate_rope_cos_sin(model, head_dim, token_pos, scratch->cos_buf, scratch->sin_buf);
         if (ret != Q_OK) return ret;
         
         // Apply RoPE to each Q head
         for (uint32_t h = 0; h < n_heads; h++) {
-            const float* q_head = q_buf + (size_t)t * dim + (size_t)h * head_dim;
-            float* q_head_out = q_rope_buf + (size_t)t * dim + (size_t)h * head_dim;
+            const float* q_head = scratch->q_buf + (size_t)t * dim + (size_t)h * head_dim;
+            float* q_head_out = scratch->q_rope_buf + (size_t)t * dim + (size_t)h * head_dim;
             
-            ret = q_rope_f32_avx2(q_head, cos_buf, sin_buf, q_head_out, head_dim);
+            ret = q_rope_f32_avx2(q_head, scratch->cos_buf, scratch->sin_buf, q_head_out, head_dim);
             if (ret != Q_OK) return ret;
         }
         
         // Apply RoPE to each K head (KV heads only)
         for (uint32_t h = 0; h < n_kv_heads; h++) {
-            const float* k_head = k_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
-            float* k_head_out = k_rope_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
+            const float* k_head = scratch->k_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
+            float* k_head_out = scratch->k_rope_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
             
-            ret = q_rope_f32_avx2(k_head, cos_buf, sin_buf, k_head_out, head_dim);
+            ret = q_rope_f32_avx2(k_head, scratch->cos_buf, scratch->sin_buf, k_head_out, head_dim);
             if (ret != Q_OK) return ret;
         }
     }
@@ -876,36 +1013,24 @@ static q_error_code llama_attention_forward(
             float* k_cache = get_kv_cache_ptr(ctx, config, layer_idx, h, cache_pos, true);
             if (k_cache == NULL) return Q_ERR_INVALID_ARG;
             
-            const float* k_src = k_rope_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
+            const float* k_src = scratch->k_rope_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
             memcpy(k_cache, k_src, head_dim * sizeof(float));
             
             // Store V
             float* v_cache = get_kv_cache_ptr(ctx, config, layer_idx, h, cache_pos, false);
             if (v_cache == NULL) return Q_ERR_INVALID_ARG;
             
-            const float* v_src = v_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
+            const float* v_src = scratch->v_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
             memcpy(v_cache, v_src, head_dim * sizeof(float));
         }
     }
     
-    // Reorganize Q/K/V from [seq_len, dim] to [seq_len, n_heads, head_dim] layout
-    // Allocate buffers for reshaped Q/K/V (per-head layout)
-    size_t q_per_head_size = (size_t)seq_len * head_dim * sizeof(float);
-    q_per_head_size = Q_ALIGN_SIZE(q_per_head_size);
-    
-    float* q_heads = (float*)q_arena_alloc(ctx, q_per_head_size * n_heads);
-    float* k_heads = (float*)q_arena_alloc(ctx, q_per_head_size * n_kv_heads);
-    float* v_heads = (float*)q_arena_alloc(ctx, q_per_head_size * n_kv_heads);
-    
-    if (q_heads == NULL || k_heads == NULL || v_heads == NULL) {
-        return Q_ERR_ARENA_OOM;
-    }
-    
+    // CORREÇÃO 1: Buffers já alocados no scratchpad
     // Reshape Q: [seq_len, dim] -> [seq_len, n_heads, head_dim]
     for (uint32_t t = 0; t < seq_len; t++) {
         for (uint32_t h = 0; h < n_heads; h++) {
-            const float* q_src = q_rope_buf + (size_t)t * dim + (size_t)h * head_dim;
-            float* q_dst = q_heads + (size_t)h * (seq_len * head_dim) + (size_t)t * head_dim;
+            const float* q_src = scratch->q_rope_buf + (size_t)t * dim + (size_t)h * head_dim;
+            float* q_dst = scratch->q_heads + (size_t)h * (seq_len * head_dim) + (size_t)t * head_dim;
             memcpy(q_dst, q_src, head_dim * sizeof(float));
         }
     }
@@ -913,39 +1038,30 @@ static q_error_code llama_attention_forward(
     // Reshape K/V: [seq_len, n_kv_heads * head_dim] -> [seq_len, n_kv_heads, head_dim]
     for (uint32_t t = 0; t < seq_len; t++) {
         for (uint32_t h = 0; h < n_kv_heads; h++) {
-            const float* k_src = k_rope_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
-            float* k_dst = k_heads + (size_t)h * (seq_len * head_dim) + (size_t)t * head_dim;
+            const float* k_src = scratch->k_rope_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
+            float* k_dst = scratch->k_heads + (size_t)h * (seq_len * head_dim) + (size_t)t * head_dim;
             memcpy(k_dst, k_src, head_dim * sizeof(float));
             
-            const float* v_src = v_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
-            float* v_dst = v_heads + (size_t)h * (seq_len * head_dim) + (size_t)t * head_dim;
+            const float* v_src = scratch->v_buf + (size_t)t * (n_kv_heads * head_dim) + (size_t)h * head_dim;
+            float* v_dst = scratch->v_heads + (size_t)h * (seq_len * head_dim) + (size_t)t * head_dim;
             memcpy(v_dst, v_src, head_dim * sizeof(float));
         }
     }
     
-    // Allocate buffers ONCE before the loop (optimization: reduce arena pressure)
-    size_t attn_head_size = (size_t)seq_len * head_dim * sizeof(float);
-    attn_head_size = Q_ALIGN_SIZE(attn_head_size);
-    float* attn_head_buf = (float*)q_arena_alloc(ctx, attn_head_size);
-    
-    // Allocate buffer for transposed K (reused for all heads)
-    size_t k_t_size = (size_t)head_dim * seq_len * sizeof(float);
-    k_t_size = Q_ALIGN_SIZE(k_t_size);
-    float* k_t_buf = (float*)q_arena_alloc(ctx, k_t_size);
-    
-    if (attn_head_buf == NULL || k_t_buf == NULL) {
-        return Q_ERR_ARENA_OOM;
-    }
-    
     // CRITICAL: Ensure k_t_buf is properly aligned for AVX2 (32-byte alignment)
     // Q_ALIGN_SIZE already aligns to 64 bytes, but verify explicitly
-    if (((uintptr_t)k_t_buf % 32) != 0) {
+    if (((uintptr_t)scratch->k_t_buf % 32) != 0) {
         #ifdef DEBUG
-        fprintf(stderr, "ERROR: k_t_buf not 32-byte aligned: %p\n", (void*)k_t_buf);
+        fprintf(stderr, "ERROR: k_t_buf not 32-byte aligned: %p\n", (void*)scratch->k_t_buf);
         abort();
         #endif
         return Q_ERR_MISALIGNED;
     }
+    
+    // OPTIMIZATION: Track which KV heads have been transposed
+    // Since multiple query heads share the same KV head (GQA), we transpose
+    // each KV head once when first used, then reuse for subsequent query heads
+    uint32_t last_transposed_kv_head = UINT32_MAX;  // Invalid index
     
     // Process each query head
     float scale = 1.0f / sqrtf((float)head_dim);
@@ -954,35 +1070,38 @@ static q_error_code llama_attention_forward(
         // Determine which KV head to use (GQA: multiple Q heads share KV head)
         uint32_t kv_head_idx = qh / (n_heads / n_kv_heads);
         
+        // OPTIMIZATION: Transpose K only if this KV head hasn't been transposed yet
+        // This avoids redundant transposition for query heads that share the same KV head
+        if (kv_head_idx != last_transposed_kv_head) {
+            const float* k_head_data = scratch->k_heads + (size_t)kv_head_idx * (seq_len * head_dim);
+            // Transpose K: [seq_len, head_dim] -> [head_dim, seq_len]
+            for (uint32_t i = 0; i < seq_len; i++) {
+                for (uint32_t j = 0; j < head_dim; j++) {
+                    scratch->k_t_buf[j * seq_len + i] = k_head_data[i * head_dim + j];
+                }
+            }
+            last_transposed_kv_head = kv_head_idx;
+        }
+        
         // Extract Q head: [seq_len, head_dim]
         q_tensor q_head_tensor = {
-            .data = (void*)(q_heads + (size_t)qh * (seq_len * head_dim)),
+            .data = (void*)(scratch->q_heads + (size_t)qh * (seq_len * head_dim)),
             .ne = {seq_len, head_dim, 1, 1},
             .nb = {head_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
             .type = Q_F32
         };
         
         // Compute scores: Q @ K^T -> [seq_len, seq_len]
-        // Transpose K: [seq_len, head_dim] -> [head_dim, seq_len]
-        // Reuse k_t_buf allocated before loop
-        
-        // Transpose K: [seq_len, head_dim] -> [head_dim, seq_len]
-        const float* k_head_data = k_heads + (size_t)kv_head_idx * (seq_len * head_dim);
-        for (uint32_t i = 0; i < seq_len; i++) {
-            for (uint32_t j = 0; j < head_dim; j++) {
-                k_t_buf[j * seq_len + i] = k_head_data[i * head_dim + j];
-            }
-        }
-        
+        // OPTIMIZATION: Use pre-transposed K from k_t_buf (transposed once per KV head)
         q_tensor k_t_tensor = {
-            .data = (void*)k_t_buf,
+            .data = (void*)scratch->k_t_buf,
             .ne = {head_dim, seq_len, 1, 1},
             .nb = {seq_len * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
             .type = Q_F32
         };
         
         q_tensor scores_tensor = {
-            .data = (void*)scores_buf,
+            .data = (void*)scratch->scores_buf,
             .ne = {seq_len, seq_len, 1, 1},
             .nb = {seq_len * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
             .type = Q_F32
@@ -991,82 +1110,64 @@ static q_error_code llama_attention_forward(
         // CRITICAL VALIDATION: Verify dimensions match before MatMul
         // A[seq_len, head_dim] @ B[head_dim, seq_len] -> C[seq_len, seq_len]
         if (q_head_tensor.ne[0] != seq_len || q_head_tensor.ne[1] != head_dim) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: q_head_tensor dimensions mismatch: expected [%u,%u], got [%u,%u]\n",
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: q_head_tensor dimensions mismatch: expected [%u,%u], got [%u,%u]\n",
                 seq_len, head_dim, q_head_tensor.ne[0], q_head_tensor.ne[1]);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            abort();
+            #endif
             return Q_ERR_INVALID_SIZE;
         }
         if (k_t_tensor.ne[0] != head_dim || k_t_tensor.ne[1] != seq_len) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: k_t_tensor dimensions mismatch: expected [%u,%u], got [%u,%u]\n",
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: k_t_tensor dimensions mismatch: expected [%u,%u], got [%u,%u]\n",
                 head_dim, seq_len, k_t_tensor.ne[0], k_t_tensor.ne[1]);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            abort();
+            #endif
             return Q_ERR_INVALID_SIZE;
         }
         if (scores_tensor.ne[0] != seq_len || scores_tensor.ne[1] != seq_len) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: scores_tensor dimensions mismatch: expected [%u,%u], got [%u,%u]\n",
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: scores_tensor dimensions mismatch: expected [%u,%u], got [%u,%u]\n",
                 seq_len, seq_len, scores_tensor.ne[0], scores_tensor.ne[1]);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            abort();
+            #endif
             return Q_ERR_INVALID_SIZE;
         }
         
-        // DEBUG: Print dimensions for attention scores
-        char scores_debug[256];
-        int scores_debug_len = snprintf(scores_debug, sizeof(scores_debug),
-            "DEBUG: Attention scores: q_head [%u,%u] @ k_t [%u,%u] -> scores [%u,%u]\n",
-            q_head_tensor.ne[0], q_head_tensor.ne[1],
-            k_t_tensor.ne[0], k_t_tensor.ne[1],
-            scores_tensor.ne[0], scores_tensor.ne[1]);
-        Q_WRITE_STDERR( scores_debug, (size_t)scores_debug_len);
-        
         ret = q_matmul_f32_avx2(&q_head_tensor, &k_t_tensor, &scores_tensor, ctx);
         if (ret != Q_OK) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: Attention scores MatMul failed: ret=%d\n", ret);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: Attention scores MatMul failed: ret=%d\n", ret);
+            abort();
+            #endif
             return ret;
         }
         
         // Scale scores: scores *= 1/sqrt(head_dim)
         for (uint32_t i = 0; i < seq_len * seq_len; i++) {
-            scores_buf[i] *= scale;
+            scratch->scores_buf[i] *= scale;
         }
         
         // Apply causal mask
-        char mask_debug[128];
-        int mask_debug_len = snprintf(mask_debug, sizeof(mask_debug),
-            "DEBUG: Applying causal mask: seq_len=%u\n", seq_len);
-        Q_WRITE_STDERR( mask_debug, (size_t)mask_debug_len);
-        
         ret = q_causal_mask_f32_avx2(&scores_tensor, -1e9f);
         if (ret != Q_OK) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: Causal mask failed: ret=%d\n", ret);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: Causal mask failed: ret=%d\n", ret);
+            abort();
+            #endif
             return ret;
         }
         
         // Softmax: probs = softmax(scores) per row
-        float* probs_buf = scores_buf;  // Reuse scores buffer
-        char softmax_debug[128];
-        int softmax_debug_len = snprintf(softmax_debug, sizeof(softmax_debug),
-            "DEBUG: Applying softmax: seq_len=%u\n", seq_len);
-        Q_WRITE_STDERR( softmax_debug, (size_t)softmax_debug_len);
+        float* probs_buf = scratch->scores_buf;  // Reuse scores buffer
         
         for (uint32_t i = 0; i < seq_len; i++) {
-            ret = q_softmax_f32_avx2(&scores_buf[i * seq_len], &probs_buf[i * seq_len], seq_len);
+            ret = q_softmax_f32_avx2(&scratch->scores_buf[i * seq_len], &probs_buf[i * seq_len], seq_len);
             if (ret != Q_OK) {
-                char err_msg[256];
-                int err_len = snprintf(err_msg, sizeof(err_msg),
-                    "ERROR: Softmax failed at row %u: ret=%d\n", i, ret);
-                Q_WRITE_STDERR( err_msg, (size_t)err_len);
+                #ifdef DEBUG
+                fprintf(stderr, "ERROR: Softmax failed at row %u: ret=%d\n", i, ret);
+                abort();
+                #endif
                 return ret;
             }
         }
@@ -1080,273 +1181,136 @@ static q_error_code llama_attention_forward(
         };
         
         q_tensor v_head_tensor = {
-            .data = (void*)(v_heads + (size_t)kv_head_idx * (seq_len * head_dim)),
+            .data = (void*)(scratch->v_heads + (size_t)kv_head_idx * (seq_len * head_dim)),
             .ne = {seq_len, head_dim, 1, 1},
             .nb = {head_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
             .type = Q_F32
         };
         
         q_tensor attn_head_tensor = {
-            .data = (void*)attn_head_buf,
+            .data = (void*)scratch->attn_head_buf,
             .ne = {seq_len, head_dim, 1, 1},
             .nb = {head_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
             .type = Q_F32
         };
         
-        // DEBUG: Print dimensions for attention output MatMul
-        char attn_out_debug[256];
-        int attn_out_debug_len = snprintf(attn_out_debug, sizeof(attn_out_debug),
-            "DEBUG: Attention output: probs [%u,%u] @ v_head [%u,%u] -> attn_head [%u,%u]\n",
-            probs_tensor.ne[0], probs_tensor.ne[1],
-            v_head_tensor.ne[0], v_head_tensor.ne[1],
-            attn_head_tensor.ne[0], attn_head_tensor.ne[1]);
-        Q_WRITE_STDERR( attn_out_debug, (size_t)attn_out_debug_len);
-        
         ret = q_matmul_f32_avx2(&probs_tensor, &v_head_tensor, &attn_head_tensor, ctx);
         if (ret != Q_OK) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: Attention output MatMul failed: ret=%d\n", ret);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: Attention output MatMul failed: ret=%d\n", ret);
+            abort();
+            #endif
             return ret;
         }
         
         // Concatenate attention outputs from all heads
-        // Copy attn_head_buf to output at position for this head
+        // CORREÇÃO: Usar buffer temporário (scratch->q_rope_buf) para evitar aliasing
+        // Não escrever diretamente em output porque vamos usar output como entrada depois
         for (uint32_t t = 0; t < seq_len; t++) {
-            float* out_head = output + (size_t)t * dim + (size_t)qh * head_dim;
-            const float* attn_head = attn_head_buf + (size_t)t * head_dim;
+            float* out_head = scratch->q_rope_buf + (size_t)t * dim + (size_t)qh * head_dim;
+            const float* attn_head = scratch->attn_head_buf + (size_t)t * head_dim;
             memcpy(out_head, attn_head, head_dim * sizeof(float));
         }
     }
     
     // Output projection: attn_out @ wo -> [seq_len, dim]
     // CRITICAL FIX: Use q_gemv_q4_f32_avx2 for Q4_0 weights
-    // DEBUG: Print dimensions
-    char wo_debug[256];
-    int wo_debug_len = snprintf(wo_debug, sizeof(wo_debug),
-        "DEBUG: Output projection: wo->ne[0]=%u, wo->ne[1]=%u, dim=%u\n",
-        layer->wo->ne[0], layer->wo->ne[1], dim);
-    ssize_t write_result_wo = write(2, wo_debug, (size_t)wo_debug_len);
-    (void)write_result_wo;
+    // CORREÇÃO: Usar scratch->q_rope_buf como entrada (dados concatenados das heads)
+    // e output como saída (sem aliasing)
     
     for (uint32_t i = 0; i < seq_len; i++) {
-        const float* attn_row = output + (size_t)i * dim;
-        float* out_row = attn_out + (size_t)i * dim;
-        
-        // DEBUG: Check alignment before calling q_gemv_q4_f32_avx2
-        char align_debug[256];
-        int align_debug_len = snprintf(align_debug, sizeof(align_debug),
-            "DEBUG: Output projection row %u: attn_row=%p (align=%zu), out_row=%p (align=%zu)\n",
-            i, (void*)attn_row, ((uintptr_t)attn_row % 32), (void*)out_row, ((uintptr_t)out_row % 32));
-        ssize_t write_result_align = write(2, align_debug, (size_t)align_debug_len);
-        (void)write_result_align;
+        const float* attn_row = scratch->q_rope_buf + (size_t)i * dim;  // Input: dados concatenados das heads
+        float* out_row = output + (size_t)i * dim;  // Output: escrever diretamente em output
         
         ret = q_gemv_q4_f32_avx2(layer->wo, attn_row, out_row);
         if (ret != Q_OK) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: Output projection failed at row %u: ret=%d\n", i, ret);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: Output projection failed at row %u: ret=%d\n", i, ret);
+            abort();
+            #endif
             return ret;
         }
     }
-    
-    // DEBUG: After output projection
-    char after_wo_debug[128];
-    int after_wo_debug_len = snprintf(after_wo_debug, sizeof(after_wo_debug),
-        "DEBUG: After output projection, copying to output\n");
-    ssize_t write_result_after_wo = write(2, after_wo_debug, (size_t)after_wo_debug_len);
-    (void)write_result_after_wo;
-    
-    // Copy final output
-    memcpy(output, attn_out, seq_len * dim * sizeof(float));
-    
-    char after_copy_debug[128];
-    int after_copy_debug_len = snprintf(after_copy_debug, sizeof(after_copy_debug),
-        "DEBUG: After copy, returning from llama_attention_forward\n");
-    ssize_t write_result_after_copy = write(2, after_copy_debug, (size_t)after_copy_debug_len);
-    (void)write_result_after_copy;
     
     return Q_OK;
 }
 
 // Helper: MLP forward pass (SwiGLU)
+// CORRIGIDO: Usa scratchpad reutilizável (Correção 1)
 static q_error_code llama_mlp_forward(
     llama_layer* restrict layer,
-    q_context* restrict ctx,
+    q_context* restrict ctx __attribute__((unused)),  // Pode não ser usado em todas as implementações
     const llama_config* restrict config,
     const float* restrict x,           // Input [seq_len, dim]
     float* restrict output,             // Output [seq_len, dim]
-    uint32_t seq_len
+    uint32_t seq_len,
+    layer_scratchpad* restrict scratch  // NOVO: scratchpad reutilizável
 ) {
     uint32_t dim = config->dim;
     uint32_t hidden_dim = config->hidden_dim;
     
-    // Allocate temporary buffers
-    size_t hidden_size = (size_t)seq_len * (size_t)hidden_dim * sizeof(float);
-    hidden_size = Q_ALIGN_SIZE(hidden_size);
-    
-    float* gate_buf = (float*)q_arena_alloc(ctx, hidden_size);
-    float* up_buf = (float*)q_arena_alloc(ctx, hidden_size);
-    float* mul_buf = (float*)q_arena_alloc(ctx, hidden_size);
-    
-    if (gate_buf == NULL || up_buf == NULL || mul_buf == NULL) {
-        return Q_ERR_ARENA_OOM;
-    }
-    
-    // Create tensor views (x_tensor and gate_tensor not used, removed to avoid warnings)
-    q_tensor up_tensor = {
-        .data = (void*)up_buf,
-        .ne = {seq_len, hidden_dim, 1, 1},
-        .nb = {hidden_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
-        .type = Q_F32
-    };
+    // CORREÇÃO 1: Usar scratchpad em vez de q_arena_alloc
+    // REMOVIDO: Todas as alocações q_arena_alloc
+    // USAR: scratch->gate_buf, scratch->up_buf, etc.
     
     // Gate projection: x_norm @ w_gate -> gate_buf [seq_len, hidden_dim]
     // CRITICAL FIX: Use q_gemv_q4_f32_avx2 for Q4_0 weights
-    // DEBUG: Print dimensions
-    char gate_debug[256];
-    int gate_debug_len = snprintf(gate_debug, sizeof(gate_debug),
-        "DEBUG: Gate projection: w_gate->ne[0]=%u, w_gate->ne[1]=%u, dim=%u, hidden_dim=%u\n",
-        layer->w_gate->ne[0], layer->w_gate->ne[1], dim, hidden_dim);
-    ssize_t write_result_gate = write(2, gate_debug, (size_t)gate_debug_len);
-    (void)write_result_gate;
     
     q_error_code ret;
     for (uint32_t i = 0; i < seq_len; i++) {
         const float* x_row = x + (size_t)i * dim;
-        float* gate_row = gate_buf + (size_t)i * hidden_dim;
+        float* gate_row = scratch->gate_buf + (size_t)i * hidden_dim;
         ret = q_gemv_q4_f32_avx2(layer->w_gate, x_row, gate_row);
         if (ret != Q_OK) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: Gate projection failed at row %u: ret=%d\n", i, ret);
-            Q_WRITE_STDERR( err_msg, (size_t)err_len);
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: Gate projection failed at row %u: ret=%d\n", i, ret);
+            abort();
+            #endif
             return ret;
         }
     }
     
     // Up projection: x_norm @ w_up -> up_buf [seq_len, hidden_dim]
     // CRITICAL FIX: Use q_gemv_q4_f32_avx2 for Q4_0 weights
-    char up_debug[256];
-    int up_debug_len = snprintf(up_debug, sizeof(up_debug),
-        "DEBUG: Up projection: w_up->ne[0]=%u, w_up->ne[1]=%u, dim=%u, hidden_dim=%u\n",
-        layer->w_up->ne[0], layer->w_up->ne[1], dim, hidden_dim);
-    ssize_t write_result_up = write(2, up_debug, (size_t)up_debug_len);
-    (void)write_result_up;
     
     for (uint32_t i = 0; i < seq_len; i++) {
         const float* x_row = x + (size_t)i * dim;
-        float* up_row = up_buf + (size_t)i * hidden_dim;
+        float* up_row = scratch->up_buf + (size_t)i * hidden_dim;
         ret = q_gemv_q4_f32_avx2(layer->w_up, x_row, up_row);
         if (ret != Q_OK) {
-            char err_msg[256];
-            int err_len = snprintf(err_msg, sizeof(err_msg),
-                "ERROR: Up projection failed at row %u: ret=%d\n", i, ret);
-            ssize_t write_result_up_err = write(2, err_msg, (size_t)err_len);
-            (void)write_result_up_err;
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: Up projection failed at row %u: ret=%d\n", i, ret);
+            abort();
+            #endif
             return ret;
         }
     }
     
-    char after_up_debug[128];
-    int after_up_debug_len = snprintf(after_up_debug, sizeof(after_up_debug),
-        "DEBUG: After up projection, doing SiLU\n");
-    Q_WRITE_STDERR(after_up_debug, (size_t)after_up_debug_len);
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            uint32_t silu_size = seq_len * hidden_dim;
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"BEFORE gate_silu allocation\",\"data\":{\"seq_len\":%u,\"hidden_dim\":%u,\"silu_size\":%u,\"hidden_size\":%zu,\"gate_buf\":\"%p\",\"gate_buf_align\":%zu},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"A,B,C\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    seq_len, hidden_dim, silu_size, hidden_size, (void*)gate_buf, ((uintptr_t)gate_buf % 32));
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
-    // SiLU activation on gate (in-place)
-    float* gate_silu = (float*)q_arena_alloc(ctx, hidden_size);
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"AFTER gate_silu allocation\",\"data\":{\"gate_silu\":\"%p\",\"gate_silu_align\":%zu,\"is_null\":%d,\"hidden_size\":%zu},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"A,D\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    (void*)gate_silu, gate_silu ? ((uintptr_t)gate_silu % 32) : 0, gate_silu == NULL ? 1 : 0, hidden_size);
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
-    if (gate_silu == NULL) {
-        return Q_ERR_ARENA_OOM;
-    }
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            uint32_t silu_size = seq_len * hidden_dim;
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"BEFORE q_silu_f32_avx2 call\",\"data\":{\"gate_buf\":\"%p\",\"gate_buf_align\":%zu,\"gate_silu\":\"%p\",\"gate_silu_align\":%zu,\"N\":%u,\"N_is_zero\":%d},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"A,B,C,E\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    (void*)gate_buf, ((uintptr_t)gate_buf % 32), (void*)gate_silu, ((uintptr_t)gate_silu % 32), silu_size, (silu_size == 0 ? 1 : 0));
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
-    ret = q_silu_f32_avx2(gate_buf, gate_silu, seq_len * hidden_dim);
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"AFTER q_silu_f32_avx2 call\",\"data\":{\"ret\":%d,\"ret_is_ok\":%d},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"E\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    ret, (ret == Q_OK ? 1 : 0));
-            fclose(log_file);
-        }
-    }
-    // #endregion
+    // CORREÇÃO 1: SiLU activation usando scratchpad
+    // REMOVIDO: Alocação q_arena_alloc
+    ret = q_silu_f32_avx2(scratch->gate_buf, scratch->gate_silu, seq_len * hidden_dim);
     
     if (ret != Q_OK) return ret;
     
     // Element-wise multiply: gate * up
     uint32_t mul_size = seq_len * hidden_dim;
     
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"BEFORE q_mul_f32_avx2 - tensor construction\",\"data\":{\"mul_size\":%u,\"gate_silu\":\"%p\",\"up_buf\":\"%p\",\"mul_buf\":\"%p\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    mul_size, (void*)gate_silu, (void*)up_buf, (void*)mul_buf);
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     q_tensor mul_tensor = {
-        .data = (void*)mul_buf,
+        .data = (void*)scratch->mul_buf,
         .ne = {mul_size, 1, 1, 1},
         .nb = {sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
     
     q_tensor gate_silu_flat = {
-        .data = (void*)gate_silu,
+        .data = (void*)scratch->gate_silu,
         .ne = {mul_size, 1, 1, 1},
         .nb = {sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
     
     q_tensor up_flat = {
-        .data = (void*)up_buf,
+        .data = (void*)scratch->up_buf,
         .ne = {mul_size, 1, 1, 1},
         .nb = {sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
@@ -1357,277 +1321,105 @@ static q_error_code llama_mlp_forward(
     gate_silu_flat.nb[0] = mul_size * sizeof(float);
     up_flat.nb[0] = mul_size * sizeof(float);
     
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"BEFORE q_mul_f32_avx2 call\",\"data\":{\"mul_tensor_ne0\":%u,\"mul_tensor_nb0\":%zu,\"gate_silu_ne0\":%u,\"gate_silu_nb0\":%zu,\"up_ne0\":%u,\"up_nb0\":%zu,\"expected_nb0\":%u},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    mul_tensor.ne[0], mul_tensor.nb[0], gate_silu_flat.ne[0], gate_silu_flat.nb[0],
-                    up_flat.ne[0], up_flat.nb[0], mul_size * sizeof(float));
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     ret = q_mul_f32_avx2(&gate_silu_flat, &up_flat, &mul_tensor);
     
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"AFTER q_mul_f32_avx2 call\",\"data\":{\"ret\":%d,\"ret_is_ok\":%d},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    ret, (ret == Q_OK ? 1 : 0));
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     if (ret != Q_OK) return ret;
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"BEFORE down projection\",\"data\":{\"seq_len\":%u,\"hidden_dim\":%u,\"dim\":%u,\"mul_buf\":\"%p\",\"output\":\"%p\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"G\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    seq_len, hidden_dim, dim, (void*)mul_buf, (void*)output);
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
-    // Down projection: mul @ w_down
-    q_tensor output_tensor = {
-        .data = (void*)output,
-        .ne = {seq_len, dim, 1, 1},
-        .nb = {dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
-        .type = Q_F32
-    };
-    
-    q_tensor mul_2d = {
-        .data = (void*)mul_buf,
-        .ne = {seq_len, hidden_dim, 1, 1},
-        .nb = {hidden_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
-        .type = Q_F32
-    };
     
     // Down projection: mul_buf @ w_down -> output [seq_len, dim]
     // CRITICAL FIX: Use q_gemv_q4_f32_avx2 for Q4_0 weights
     for (uint32_t i = 0; i < seq_len; i++) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"BEFORE q_gemv_q4_f32_avx2 (w_down) row %u\",\"data\":{\"i\":%u,\"mul_row\":\"%p\",\"out_row\":\"%p\",\"w_down_ne0\":%u,\"w_down_ne1\":%u,\"hidden_dim\":%u,\"dim\":%u},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"G\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                        i, i, (void*)(mul_buf + (size_t)i * hidden_dim), (void*)(output + (size_t)i * dim),
-                        layer->w_down ? layer->w_down->ne[0] : 0, layer->w_down ? layer->w_down->ne[1] : 0, hidden_dim, dim);
-                fclose(log_file);
-            }
-        }
-        // #endregion
-        
-        const float* mul_row = mul_buf + (size_t)i * hidden_dim;
+        const float* mul_row = scratch->mul_buf + (size_t)i * hidden_dim;
         float* out_row = output + (size_t)i * dim;
         ret = q_gemv_q4_f32_avx2(layer->w_down, mul_row, out_row);
         
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"AFTER q_gemv_q4_f32_avx2 (w_down) row %u\",\"data\":{\"i\":%u,\"ret\":%d,\"ret_is_ok\":%d},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"G\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                        i, i, ret, (ret == Q_OK ? 1 : 0));
-                fclose(log_file);
-            }
-        }
-        // #endregion
-        
         if (ret != Q_OK) return ret;
     }
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"llama_mlp_forward EXIT SUCCESS\",\"data\":{\"ret\":\"Q_OK\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"G\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__);
-            fclose(log_file);
-        }
-    }
-    // #endregion
     
     return Q_OK;
 }
 
 // Helper: Single layer forward pass
+// CORRIGIDO: Usa scratchpad reutilizável (Correção 1)
 static q_error_code llama_layer_forward(
     llama_layer* restrict layer,
     q_context* restrict ctx,
+    const llama_model* restrict model,  // NOVO: necessário para RoPE pré-calculado
     const llama_config* restrict config,
     const float* restrict x,           // Input [seq_len, dim]
     float* restrict output,            // Output [seq_len, dim]
     uint32_t layer_idx,
     uint32_t seq_len,
-    uint32_t pos
+    uint32_t pos,
+    layer_scratchpad* restrict scratch  // NOVO: scratchpad reutilizável
 ) {
     uint32_t dim = config->dim;
     
-    // Allocate temporary buffers
-    size_t buf_size = (size_t)seq_len * (size_t)dim * sizeof(float);
-    buf_size = Q_ALIGN_SIZE(buf_size);
-    
-    float* attn_out = (float*)q_arena_alloc(ctx, buf_size);
-    float* mlp_out = (float*)q_arena_alloc(ctx, buf_size);
-    float* x_norm = (float*)q_arena_alloc(ctx, buf_size);
-    
-    if (attn_out == NULL || mlp_out == NULL || x_norm == NULL) {
-        return Q_ERR_ARENA_OOM;
-    }
+    // CORREÇÃO 1: Usar scratchpad em vez de q_arena_alloc
+    // REMOVIDO: Todas as alocações q_arena_alloc
+    // USAR: scratch->attn_out, scratch->mlp_out, scratch->x_norm, scratch->x_norm_mlp
     
     // Attention block
-    char before_attn_debug[128];
-    int before_attn_debug_len = snprintf(before_attn_debug, sizeof(before_attn_debug),
-        "DEBUG: llama_layer_forward: Calling llama_attention_forward\n");
-    Q_WRITE_STDERR( before_attn_debug, (size_t)before_attn_debug_len);
-    
-    q_error_code ret = llama_attention_forward(layer, ctx, config, x, attn_out, layer_idx, seq_len, pos);
+    q_error_code ret = llama_attention_forward(layer, ctx, model, config, x, scratch->attn_out, layer_idx, seq_len, pos, scratch);
     if (ret != Q_OK) {
-        char err_msg[256];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: llama_attention_forward failed: ret=%d\n", ret);
-        Q_WRITE_STDERR( err_msg, (size_t)err_len);
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: llama_attention_forward failed: ret=%d\n", ret);
+        abort();
+        #endif
         return ret;
     }
-    
-    char after_attn_debug[128];
-    int after_attn_debug_len = snprintf(after_attn_debug, sizeof(after_attn_debug),
-        "DEBUG: llama_layer_forward: llama_attention_forward succeeded, doing residual\n");
-    Q_WRITE_STDERR( after_attn_debug, (size_t)after_attn_debug_len);
     
     // Residual connection: x = x + attn_out
     uint32_t total_size = seq_len * dim;
     
-    char residual_debug[256];
-    int residual_debug_len = snprintf(residual_debug, sizeof(residual_debug),
-        "DEBUG: Residual connection: seq_len=%u, dim=%u, total_size=%u\n",
-        seq_len, dim, total_size);
-    Q_WRITE_STDERR( residual_debug, (size_t)residual_debug_len);
-    
     q_tensor x_tensor = {
         .data = (void*)x,
         .ne = {total_size, 1, 1, 1},
-        .nb = {sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .nb = {total_size * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
     
     q_tensor attn_tensor = {
-        .data = (void*)attn_out,
+        .data = (void*)scratch->attn_out,
         .ne = {total_size, 1, 1, 1},
-        .nb = {sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .nb = {total_size * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
     
     q_tensor x_residual = {
-        .data = (void*)x_norm,
+        .data = (void*)scratch->x_norm,
         .ne = {total_size, 1, 1, 1},
-        .nb = {sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .nb = {total_size * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
-    
-    // CRITICAL FIX: nb[0] must equal total_size * sizeof(float) for contiguous 1D tensor
-    x_tensor.nb[0] = total_size * sizeof(float);
-    attn_tensor.nb[0] = total_size * sizeof(float);
-    x_residual.nb[0] = total_size * sizeof(float);
     
     ret = q_add_f32_avx2(&x_tensor, &attn_tensor, &x_residual);
     if (ret != Q_OK) return ret;
     
-    // Pre-MLP RMSNorm (need separate buffer for in-place operation)
-    float* x_norm_mlp = (float*)q_arena_alloc(ctx, buf_size);
-    if (x_norm_mlp == NULL) {
-        return Q_ERR_ARENA_OOM;
-    }
-    ret = q_rmsnorm_f32_avx2(x_norm, (const float*)layer->ffn_norm->data, x_norm_mlp, dim, config->rms_norm_eps);
+    // Pre-MLP RMSNorm (usar scratch->x_norm_mlp)
+    ret = q_rmsnorm_f32_avx2(scratch->x_norm, (const float*)layer->ffn_norm->data, scratch->x_norm_mlp, dim, config->rms_norm_eps);
     if (ret != Q_OK) return ret;
     
     // MLP block
-    ret = llama_mlp_forward(layer, ctx, config, x_norm_mlp, mlp_out, seq_len);
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"AFTER llama_mlp_forward\",\"data\":{\"ret\":%d,\"ret_is_ok\":%d},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"H\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    ret, (ret == Q_OK ? 1 : 0));
-            fclose(log_file);
-        }
-    }
-    // #endregion
+    ret = llama_mlp_forward(layer, ctx, config, scratch->x_norm_mlp, scratch->mlp_out, seq_len, scratch);
     
     if (ret != Q_OK) return ret;
     
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"BEFORE second residual (x + mlp_out)\",\"data\":{\"seq_len\":%u,\"dim\":%u,\"total_size\":%u,\"x_residual\":\"%p\",\"mlp_out\":\"%p\",\"output\":\"%p\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"H\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    seq_len, dim, seq_len * dim, (void*)x_norm, (void*)mlp_out, (void*)output);
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     // Residual connection: x = x + mlp_out
-    // Reuse total_size from first residual (already defined above)
     q_tensor mlp_tensor = {
-        .data = (void*)mlp_out,
+        .data = (void*)scratch->mlp_out,
         .ne = {total_size, 1, 1, 1},
-        .nb = {sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .nb = {total_size * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
     
     q_tensor output_tensor = {
         .data = (void*)output,
         .ne = {total_size, 1, 1, 1},
-        .nb = {sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .nb = {total_size * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
     
-    // CRITICAL FIX: nb[0] must equal total_size * sizeof(float) for contiguous 1D tensor
-    mlp_tensor.nb[0] = total_size * sizeof(float);
-    output_tensor.nb[0] = total_size * sizeof(float);
-    x_residual.nb[0] = total_size * sizeof(float);
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"BEFORE q_add_f32_avx2 (second residual)\",\"data\":{\"x_residual_ne0\":%u,\"x_residual_nb0\":%zu,\"mlp_ne0\":%u,\"mlp_nb0\":%zu,\"out_ne0\":%u,\"out_nb0\":%zu,\"expected_nb0\":%u},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"H\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    x_residual.ne[0], x_residual.nb[0], mlp_tensor.ne[0], mlp_tensor.nb[0], output_tensor.ne[0], output_tensor.nb[0], (unsigned long)(total_size * sizeof(float)));
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     ret = q_add_f32_avx2(&x_residual, &mlp_tensor, &output_tensor);
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"llama3.c:%d\",\"message\":\"AFTER q_add_f32_avx2 (second residual)\",\"data\":{\"ret\":%d,\"ret_is_ok\":%d},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"H\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    ret, (ret == Q_OK ? 1 : 0));
-            fclose(log_file);
-        }
-    }
-    // #endregion
     
     if (ret != Q_OK) return ret;
     
@@ -1691,95 +1483,57 @@ q_error_code llama_forward(
     // This catches arena corruption or pointer invalidation bugs
     Q_VALIDATE_PTR_OR_RETURN(model->token_embd, Q_ERR_INVALID_ARG);
     
-    // CRITICAL DEBUG: Print type value before validation (cannot be optimized away)
-    // Use volatile to prevent compiler optimization
-    volatile q_dtype actual_type = model->token_embd->type;
-    volatile q_dtype expected_type = Q_F32;
-    volatile q_tensor* token_embd_ptr = model->token_embd;
-    
-    // DEBUG: Print type before validation (for diagnosis)
-    char debug_msg[512];
-    int msg_len = snprintf(debug_msg, sizeof(debug_msg),
-        "DEBUG: llama_forward: token_embd->type = %d (expected %d)\n"
-        "  token_embd pointer: %p (was %p at creation)\n"
-        "  token_embd->data: %p\n"
-        "  Arena head: %zu, Arena size: %zu\n"
-        "  token_embd offset in arena: %zu\n"
-        "  sizeof(q_tensor) = %zu\n",
-        (int)actual_type, (int)expected_type,
-        (void*)token_embd_ptr, (void*)0x7a136c3fe040UL,  // Hardcoded from debug output
-        (void*)token_embd_ptr->data,
-        ctx->scratch_head, ctx->scratch_size,
-        (size_t)((uint8_t*)token_embd_ptr - (uint8_t*)ctx->scratch_buffer),
-        sizeof(q_tensor));
-    Q_WRITE_STDERR( debug_msg, (size_t)msg_len);
-    
-    // Verify type is still correct (catches memory corruption)
-    // ALWAYS check this, even in Release mode (critical safety check)
-    if (actual_type != expected_type) {
-        char err_msg[512];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: llama_forward: token_embd->type corrupted!\n"
-            "  Expected: %d (Q_F32), Got: %d\n"
-            "  token_embd pointer: %p\n"
-            "  token_embd->data: %p\n"
-            "  Arena head: %zu, Arena size: %zu\n"
-            "  token_embd offset in arena: %zu\n",
-            (int)Q_F32, (int)actual_type,
-            (void*)token_embd_ptr,
-            (void*)token_embd_ptr->data,
-            ctx->scratch_head, ctx->scratch_size,
-            (size_t)((uint8_t*)token_embd_ptr - (uint8_t*)ctx->scratch_buffer));
-        Q_WRITE_STDERR( err_msg, (size_t)err_len);
-        #ifdef DEBUG
-        abort();
-        #endif
-        return Q_ERR_INVALID_DTYPE;
-    }
+    // NOTE: token_embd->type is validated in llama_build_graph()
+    // Arena is not reset between llama_build_graph() and llama_forward()
+    // Therefore, type validation here is redundant unless arena is reset externally
+    // AddressSanitizer will catch memory corruption in DEBUG mode
     
     q_error_code ret = token_embedding_lookup(model->token_embd, tokens, seq_len, x);
     if (ret != Q_OK) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: llama_forward: token_embedding_lookup returned %d\n", ret);
-        Q_WRITE_STDERR( err_msg, (size_t)err_len);
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: llama_forward: token_embedding_lookup returned %d\n", ret);
+        abort();
+        #endif
         return ret;
     }
     
-    char success_msg[128];
-    int success_len = snprintf(success_msg, sizeof(success_msg),
-        "DEBUG: llama_forward: token_embedding_lookup succeeded\n");
-    Q_WRITE_STDERR( success_msg, (size_t)success_len);
-    
-    // Step 2: Forward through layers
-    // Allocate temporary buffer for layer output
-    size_t layer_buf_size = (size_t)seq_len * (size_t)dim * sizeof(float);
-    layer_buf_size = Q_ALIGN_SIZE(layer_buf_size);
-    float* layer_out = (float*)q_arena_alloc(ctx, layer_buf_size);
-    if (layer_out == NULL) {
+    // ============================================================================
+    // CORREÇÃO 1: Alocar scratchpad UMA VEZ antes do loop de camadas
+    // ============================================================================
+    size_t scratchpad_size = calculate_layer_scratchpad_size(&model->config, seq_len);
+    layer_scratchpad scratch;
+    uint8_t* scratch_mem = (uint8_t*)q_arena_alloc(ctx, scratchpad_size);
+    if (scratch_mem == NULL) {
         return Q_ERR_ARENA_OOM;
     }
     
-    // Process each layer
+    init_layer_scratchpad(&scratch, scratch_mem, &model->config, seq_len);
+    
+    // Buffers ping-pong para saída de camada (reutilização eficiente)
+    size_t layer_buf_size = (size_t)seq_len * (size_t)dim * sizeof(float);
+    layer_buf_size = Q_ALIGN_SIZE(layer_buf_size);
+    float* layer_buf_A = (float*)q_arena_alloc(ctx, layer_buf_size);
+    float* layer_buf_B = (float*)q_arena_alloc(ctx, layer_buf_size);
+    if (layer_buf_A == NULL || layer_buf_B == NULL) {
+        return Q_ERR_ARENA_OOM;
+    }
+    
+    // Step 2: Forward through layers
+    // Process each layer - REUTILIZA scratchpad para todas as camadas
     for (uint32_t l = 0; l < model->config.n_layers; l++) {
-        char layer_msg[128];
-        int layer_len = snprintf(layer_msg, sizeof(layer_msg),
-            "DEBUG: llama_forward: Calling llama_layer_forward for layer %u\n", l);
-        Q_WRITE_STDERR( layer_msg, (size_t)layer_len);
+        float* output = (l % 2 == 0) ? layer_buf_B : layer_buf_A;
         
-        ret = llama_layer_forward(&model->layers[l], ctx, &model->config, x, layer_out, l, seq_len, pos);
+        ret = llama_layer_forward(&model->layers[l], ctx, model, &model->config, 
+                                 x, output, l, seq_len, pos, &scratch);
         if (ret != Q_OK) {
-            char layer_err[128];
-            int layer_err_len = snprintf(layer_err, sizeof(layer_err),
-                "ERROR: llama_forward: llama_layer_forward[%u] returned %d\n", l, ret);
-            Q_WRITE_STDERR( layer_err, (size_t)layer_err_len);
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: llama_forward: llama_layer_forward[%u] returned %d\n", l, ret);
+            abort();
+            #endif
             return ret;
         }
         
-        // Swap buffers for next layer (x becomes output of previous layer)
-        float* tmp = x;
-        x = layer_out;
-        layer_out = tmp;
+        x = output; // Swap para próxima camada
     }
     
     // Step 3: Final RMSNorm

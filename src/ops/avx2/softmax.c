@@ -63,7 +63,7 @@ q_error_code q_softmax_f32_avx2(
     // For small sizes (< 8), use scalar fallback
     // For larger sizes, use vectorized code with tail handling
     const uint32_t vec_count = N / 8;
-    const uint32_t tail_count = N % 8;
+    // tail_count not used (handled by remaining loop below)
     
     // Step 1: Find maximum (vectorized + scalar tail)
     __m256 max_vec = _mm256_set1_ps(-INFINITY);

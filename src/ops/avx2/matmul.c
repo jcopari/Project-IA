@@ -93,20 +93,6 @@ q_error_code q_gemv_q4_f32_avx2(
     const float* restrict input,         // F32 vector [N]
     float* restrict output              // F32 vector [M] (output)
 ) {
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"matmul.c:%d\",\"message\":\"q_gemv_q4_f32_avx2 ENTRY\",\"data\":{\"weights\":\"%p\",\"input\":\"%p\",\"output\":\"%p\",\"weights_ne\":[%u,%u,%u,%u],\"input_is_null\":%d,\"output_is_null\":%d},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"G\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    (void*)weights, (void*)input, (void*)output,
-                    weights ? weights->ne[0] : 0, weights ? weights->ne[1] : 0, weights ? weights->ne[2] : 0, weights ? weights->ne[3] : 0,
-                    (input == NULL ? 1 : 0), (output == NULL ? 1 : 0));
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     // Security: Critical validations (always active, optimized for Release)
     Q_VALIDATE_PTR_OR_RETURN(weights, Q_ERR_INVALID_ARG);
     Q_VALIDATE_PTR_OR_RETURN(input, Q_ERR_INVALID_ARG);
@@ -121,61 +107,32 @@ q_error_code q_gemv_q4_f32_avx2(
     const uint32_t M = weights->ne[0];  // Number of rows (output size)
     const uint32_t N = weights->ne[1];  // Number of cols (input size)
     
+    #ifdef DEBUG
     // DEBUG: Print dimensions for diagnosis
     char debug_msg[256];
     int debug_len = snprintf(debug_msg, sizeof(debug_msg),
         "DEBUG: q_gemv_q4_f32_avx2: M=%u, N=%u, N%%32=%u\n", M, N, N % 32);
     write(2, debug_msg, (size_t)debug_len);
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"matmul.c:%d\",\"message\":\"BEFORE dimension validation\",\"data\":{\"M\":%u,\"N\":%u,\"M_is_zero\":%d,\"N_is_zero\":%d,\"N_mod32\":%u},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"G\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    M, N, (M == 0 ? 1 : 0), (N == 0 ? 1 : 0), N % 32);
-            fclose(log_file);
-        }
-    }
-    // #endregion
+    #endif
     
     // Security: Dimension validations (always active)
     if (M == 0) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"matmul.c:%d\",\"message\":\"VALIDATION FAILED: M is zero\",\"data\":{\"error\":\"Q_ERR_INVALID_SIZE\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"G\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__);
-                fclose(log_file);
-            }
-        }
-        // #endregion
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_gemv_q4_f32_avx2: M (weights->ne[0]) is zero\n");
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_gemv_q4_f32_avx2: M (weights->ne[0]) is zero\n");
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
     }
     if (N == 0) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_gemv_q4_f32_avx2: N (weights->ne[1]) is zero\n");
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_gemv_q4_f32_avx2: N (weights->ne[1]) is zero\n");
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
     }
     if (N % 32 != 0) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_gemv_q4_f32_avx2: N (weights->ne[1]=%u) is not multiple of 32\n", N);
-        write(2, err_msg, (size_t)err_len);
         #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_gemv_q4_f32_avx2: N (weights->ne[1]=%u) is not multiple of 32\n", N);
         abort();
         #endif
         return Q_ERR_INVALID_SIZE;
@@ -183,19 +140,19 @@ q_error_code q_gemv_q4_f32_avx2(
     
     // Security: Type validation (always active)
     if (weights->type != Q_Q4_0) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_gemv_q4_f32_avx2: weights->type=%d (expected Q_Q4_0=%d)\n",
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_gemv_q4_f32_avx2: weights->type=%d (expected Q_Q4_0=%d)\n",
             weights->type, Q_Q4_0);
-        write(2, err_msg, (size_t)err_len);
+        abort();
+        #endif
         return Q_ERR_INVALID_DTYPE;
     }
     
     // Security: Overflow validation (always active)
     const uint32_t blocks_per_row = N / 32;
     
-    // DEBUG: Print overflow validation info
     #ifdef DEBUG
+    // DEBUG: Print overflow validation info
     char overflow_debug[256];
     int overflow_debug_len = snprintf(overflow_debug, sizeof(overflow_debug),
         "DEBUG: q_gemv_q4_f32_avx2: Overflow check: M=%u, blocks_per_row=%u, M*blocks_per_row=%llu\n",
@@ -206,11 +163,11 @@ q_error_code q_gemv_q4_f32_avx2(
     // CRITICAL: Check for overflow in M * blocks_per_row
     // This is used to calculate total number of blocks = M * blocks_per_row
     if (M > 0 && blocks_per_row > UINT32_MAX / M) {
-        char err_msg[128];
-        int err_len = snprintf(err_msg, sizeof(err_msg),
-            "ERROR: q_gemv_q4_f32_avx2: Overflow in M*blocks_per_row: M=%u, blocks_per_row=%u\n",
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_gemv_q4_f32_avx2: Overflow in M*blocks_per_row: M=%u, blocks_per_row=%u\n",
             M, blocks_per_row);
-        write(2, err_msg, (size_t)err_len);
+        abort();
+        #endif
         return Q_ERR_OVERFLOW;
     }
     
@@ -284,17 +241,6 @@ q_error_code q_gemv_q4_f32_avx2(
         
         output[i] = final_sum;
     }
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"matmul.c:%d\",\"message\":\"q_gemv_q4_f32_avx2 EXIT SUCCESS\",\"data\":{\"ret\":\"Q_OK\",\"M\":%u,\"N\":%u},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"G\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__, M, N);
-            fclose(log_file);
-        }
-    }
-    // #endregion
     
     return Q_OK;
 }

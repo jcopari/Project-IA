@@ -19,21 +19,6 @@ q_error_code q_mul_f32_avx2(
     const q_tensor* b,      // NO restrict: output may alias a or b
     q_tensor* output        // NO restrict: may alias a or b (in-place operation)
 ) {
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"q_mul_f32_avx2 ENTRY\",\"data\":{\"a\":\"%p\",\"b\":\"%p\",\"output\":\"%p\",\"a_ne\":[%u,%u,%u,%u],\"b_ne\":[%u,%u,%u,%u],\"out_ne\":[%u,%u,%u,%u]},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    (void*)a, (void*)b, (void*)output,
-                    a ? a->ne[0] : 0, a ? a->ne[1] : 0, a ? a->ne[2] : 0, a ? a->ne[3] : 0,
-                    b ? b->ne[0] : 0, b ? b->ne[1] : 0, b ? b->ne[2] : 0, b ? b->ne[3] : 0,
-                    output ? output->ne[0] : 0, output ? output->ne[1] : 0, output ? output->ne[2] : 0, output ? output->ne[3] : 0);
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     // STEP 0: Validation (always active)
     Q_VALIDATE_PTR_OR_RETURN(a, Q_ERR_INVALID_ARG);
     Q_VALIDATE_PTR_OR_RETURN(b, Q_ERR_INVALID_ARG);
@@ -42,101 +27,25 @@ q_error_code q_mul_f32_avx2(
     Q_VALIDATE_PTR_OR_RETURN(b->data, Q_ERR_INVALID_ARG);
     Q_VALIDATE_PTR_OR_RETURN(output->data, Q_ERR_INVALID_ARG);
     
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"BEFORE 1D tensor validation\",\"data\":{\"a_ne1\":%u,\"a_ne2\":%u,\"a_ne3\":%u,\"b_ne1\":%u,\"b_ne2\":%u,\"b_ne3\":%u,\"out_ne1\":%u,\"out_ne2\":%u,\"out_ne3\":%u},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    a->ne[1], a->ne[2], a->ne[3], b->ne[1], b->ne[2], b->ne[3], output->ne[1], output->ne[2], output->ne[3]);
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     // Validate 1D tensors (explicit check)
     if (!(a->ne[1] == 1 && a->ne[2] == 1 && a->ne[3] == 1)) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"VALIDATION FAILED: a is not 1D\",\"data\":{\"a_ne\":[%u,%u,%u,%u],\"error\":\"Q_ERR_INVALID_SIZE\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                        a->ne[0], a->ne[1], a->ne[2], a->ne[3]);
-                fclose(log_file);
-            }
-        }
-        // #endregion
         return Q_ERR_INVALID_SIZE;
     }
     if (!(b->ne[1] == 1 && b->ne[2] == 1 && b->ne[3] == 1)) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"VALIDATION FAILED: b is not 1D\",\"data\":{\"b_ne\":[%u,%u,%u,%u],\"error\":\"Q_ERR_INVALID_SIZE\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                        b->ne[0], b->ne[1], b->ne[2], b->ne[3]);
-                fclose(log_file);
-            }
-        }
-        // #endregion
         return Q_ERR_INVALID_SIZE;
     }
     if (!(output->ne[1] == 1 && output->ne[2] == 1 && output->ne[3] == 1)) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"VALIDATION FAILED: output is not 1D\",\"data\":{\"out_ne\":[%u,%u,%u,%u],\"error\":\"Q_ERR_INVALID_SIZE\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                        output->ne[0], output->ne[1], output->ne[2], output->ne[3]);
-                fclose(log_file);
-            }
-        }
-        // #endregion
         return Q_ERR_INVALID_SIZE;
     }
     
     // Extract dimensions
     const uint32_t N = a->ne[0];
     
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"BEFORE shape matching validation\",\"data\":{\"N\":%u,\"b_ne0\":%u,\"out_ne0\":%u},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__, N, b->ne[0], output->ne[0]);
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     // Validate shapes match
     if (N != b->ne[0]) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"VALIDATION FAILED: shape mismatch a vs b\",\"data\":{\"a_ne0\":%u,\"b_ne0\":%u,\"error\":\"Q_ERR_INVALID_SIZE\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__, N, b->ne[0]);
-                fclose(log_file);
-            }
-        }
-        // #endregion
         return Q_ERR_INVALID_SIZE;
     }
     if (N != output->ne[0]) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"VALIDATION FAILED: shape mismatch a vs output\",\"data\":{\"a_ne0\":%u,\"out_ne0\":%u,\"error\":\"Q_ERR_INVALID_SIZE\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__, N, output->ne[0]);
-                fclose(log_file);
-            }
-        }
-        // #endregion
         return Q_ERR_INVALID_SIZE;
     }
     
@@ -145,56 +54,14 @@ q_error_code q_mul_f32_avx2(
     Q_VALIDATE_OR_RETURN(b->type == Q_F32, Q_ERR_INVALID_DTYPE);
     Q_VALIDATE_OR_RETURN(output->type == Q_F32, Q_ERR_INVALID_DTYPE);
     
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"BEFORE contiguity validation\",\"data\":{\"a_nb0\":%zu,\"b_nb0\":%zu,\"out_nb0\":%zu,\"expected_nb0\":%u,\"N\":%u},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__,
-                    a->nb[0], b->nb[0], output->nb[0], N * sizeof(float), N);
-            fclose(log_file);
-        }
-    }
-    // #endregion
-    
     // Validate contiguity: nb[0] must equal N * sizeof(float) for 1D contiguous tensors
     if (a->nb[0] != N * sizeof(float)) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"VALIDATION FAILED: a not contiguous\",\"data\":{\"a_nb0\":%zu,\"expected\":%u,\"error\":\"Q_ERR_INVALID_SIZE\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__, a->nb[0], N * sizeof(float));
-                fclose(log_file);
-            }
-        }
-        // #endregion
         return Q_ERR_INVALID_SIZE;
     }
     if (b->nb[0] != N * sizeof(float)) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"VALIDATION FAILED: b not contiguous\",\"data\":{\"b_nb0\":%zu,\"expected\":%u,\"error\":\"Q_ERR_INVALID_SIZE\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__, b->nb[0], N * sizeof(float));
-                fclose(log_file);
-            }
-        }
-        // #endregion
         return Q_ERR_INVALID_SIZE;
     }
     if (output->nb[0] != N * sizeof(float)) {
-        // #region agent log
-        {
-            FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-            if (log_file) {
-                fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"VALIDATION FAILED: output not contiguous\",\"data\":{\"out_nb0\":%zu,\"expected\":%u,\"error\":\"Q_ERR_INVALID_SIZE\"},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                        (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__, output->nb[0], N * sizeof(float));
-                fclose(log_file);
-            }
-        }
-        // #endregion
         return Q_ERR_INVALID_SIZE;
     }
     
@@ -254,17 +121,6 @@ q_error_code q_mul_f32_avx2(
     for (uint32_t i = vec_end; i < N; i++) {
         out_data[i] = a_data[i] * b_data[i];
     }
-    
-    // #region agent log
-    {
-        FILE* log_file = fopen("/home/jcopari-/IA-study/.cursor/debug.log", "a");
-        if (log_file) {
-            fprintf(log_file, "{\"id\":\"log_%lu_%d\",\"timestamp\":%lu,\"location\":\"mul_fp32.c:%d\",\"message\":\"q_mul_f32_avx2 EXIT SUCCESS\",\"data\":{\"ret\":\"Q_OK\",\"N\":%u,\"vec_end\":%u},\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"F\"}\n",
-                    (unsigned long)time(NULL), __LINE__, (unsigned long)(time(NULL) * 1000), __LINE__, N, vec_end);
-            fclose(log_file);
-        }
-    }
-    // #endregion
     
     return Q_OK;
 }

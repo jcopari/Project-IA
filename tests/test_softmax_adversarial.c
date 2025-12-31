@@ -183,17 +183,31 @@ static void test_size_not_multiple_of_8(void) {
     
     float x[9] __attribute__((aligned(64)));
     float output[9] __attribute__((aligned(64)));
+    float expected[9];
     
     for (uint32_t i = 0; i < 9; i++) {
         x[i] = 1.0f;
     }
     
+    // Reference implementation
+    softmax_ref(x, expected, 9);
+    
     q_error_code ret = q_softmax_f32_avx2(x, output, 9);
     
-    if (ret == Q_ERR_INVALID_SIZE) {
-        TEST_PASS();
+    // Function should accept non-multiple-of-8 sizes (uses vectorized + scalar fallback)
+    if (ret == Q_OK) {
+        // Check sum is approximately 1.0 (softmax property)
+        float sum = 0.0f;
+        for (uint32_t i = 0; i < 9; i++) {
+            sum += output[i];
+        }
+        if (fabsf(sum - 1.0f) < 1e-4f && float_array_close(output, expected, 9, 1e-3f, 1e-2f)) {
+            TEST_PASS();
+        } else {
+            TEST_FAIL("Output does not match reference for non-multiple-of-8 size");
+        }
     } else {
-        TEST_FAIL_MSG("Expected Q_ERR_INVALID_SIZE, got %d", ret);
+        TEST_FAIL_MSG("Expected Q_OK, got %d", ret);
     }
 }
 

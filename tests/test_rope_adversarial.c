@@ -260,13 +260,27 @@ static void test_size_not_multiple_of_8(void) {
     }
 }
 
+// Helper: Convert cos/sin arrays from [c0, c1, ...] to [c0, c0, c1, c1, ...] layout
+static void duplicate_cos_sin(const float* src, float* dst, uint32_t N) {
+    for (uint32_t i = 0; i < N / 2; i++) {
+        dst[i * 2] = src[i];
+        dst[i * 2 + 1] = src[i];
+    }
+}
+
 // Test 9: Aliasing - x == output
 static void test_aliasing_x_output(void) {
     TEST_START("Aliasing - x == output");
     
     float x[8] __attribute__((aligned(64))) = {1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f};
-    float cos[4] __attribute__((aligned(64))) = {1.0f, 0.0f, -1.0f, 0.0f};
-    float sin[4] __attribute__((aligned(64))) = {0.0f, 1.0f, 0.0f, -1.0f};
+    float cos_src[4] = {1.0f, 0.0f, -1.0f, 0.0f};
+    float sin_src[4] = {0.0f, 1.0f, 0.0f, -1.0f};
+    float cos[8] __attribute__((aligned(64)));
+    float sin[8] __attribute__((aligned(64)));
+    
+    // Convert to duplicated layout for AVX2
+    duplicate_cos_sin(cos_src, cos, 8);
+    duplicate_cos_sin(sin_src, sin, 8);
     
     // Save original values
     float x_orig[8];
@@ -301,10 +315,16 @@ static void test_zero_rotation(void) {
     TEST_START("Zero rotation (cos=1, sin=0)");
     
     float x[8] __attribute__((aligned(64))) = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
-    float cos[4] __attribute__((aligned(64))) = {1.0f, 1.0f, 1.0f, 1.0f};
-    float sin[4] __attribute__((aligned(64))) = {0.0f, 0.0f, 0.0f, 0.0f};
+    float cos_src[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float sin_src[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float cos[8] __attribute__((aligned(64)));
+    float sin[8] __attribute__((aligned(64)));
     float output[8] __attribute__((aligned(64)));
     float expected[8];
+    
+    // Convert to duplicated layout for AVX2
+    duplicate_cos_sin(cos_src, cos, 8);
+    duplicate_cos_sin(sin_src, sin, 8);
     
     memcpy(expected, x, sizeof(x)); // Should be unchanged
     
@@ -338,12 +358,18 @@ static void test_90_degree_rotation(void) {
     TEST_START("90-degree rotation (cos=0, sin=1)");
     
     float x[8] __attribute__((aligned(64))) = {1.0f, 0.0f, 2.0f, 0.0f, 3.0f, 0.0f, 4.0f, 0.0f};
-    float cos[4] __attribute__((aligned(64))) = {0.0f, 0.0f, 0.0f, 0.0f};
-    float sin[4] __attribute__((aligned(64))) = {1.0f, 1.0f, 1.0f, 1.0f};
+    float cos_src[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float sin_src[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float cos[8] __attribute__((aligned(64)));
+    float sin[8] __attribute__((aligned(64)));
     float output[8] __attribute__((aligned(64)));
     float expected[8];
     
-    rope_ref(x, cos, sin, expected, 8);
+    // Convert to duplicated layout for AVX2
+    duplicate_cos_sin(cos_src, cos, 8);
+    duplicate_cos_sin(sin_src, sin, 8);
+    
+    rope_ref(x, cos_src, sin_src, expected, 8);
     
     signal(SIGSEGV, crash_handler);
     signal(SIGBUS, crash_handler);
@@ -375,12 +401,18 @@ static void test_180_degree_rotation(void) {
     TEST_START("180-degree rotation (cos=-1, sin=0)");
     
     float x[8] __attribute__((aligned(64))) = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
-    float cos[4] __attribute__((aligned(64))) = {-1.0f, -1.0f, -1.0f, -1.0f};
-    float sin[4] __attribute__((aligned(64))) = {0.0f, 0.0f, 0.0f, 0.0f};
+    float cos_src[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
+    float sin_src[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float cos[8] __attribute__((aligned(64)));
+    float sin[8] __attribute__((aligned(64)));
     float output[8] __attribute__((aligned(64)));
     float expected[8];
     
-    rope_ref(x, cos, sin, expected, 8);
+    // Convert to duplicated layout for AVX2
+    duplicate_cos_sin(cos_src, cos, 8);
+    duplicate_cos_sin(sin_src, sin, 8);
+    
+    rope_ref(x, cos_src, sin_src, expected, 8);
     
     signal(SIGSEGV, crash_handler);
     signal(SIGBUS, crash_handler);
@@ -415,9 +447,15 @@ static void test_very_large_values(void) {
         FLT_MAX / 2.0f, FLT_MAX / 2.0f, FLT_MAX / 2.0f, FLT_MAX / 2.0f,
         FLT_MAX / 2.0f, FLT_MAX / 2.0f, FLT_MAX / 2.0f, FLT_MAX / 2.0f
     };
-    float cos[4] __attribute__((aligned(64))) = {1.0f, 0.0f, -1.0f, 0.0f};
-    float sin[4] __attribute__((aligned(64))) = {0.0f, 1.0f, 0.0f, -1.0f};
+    float cos_src[4] = {1.0f, 0.0f, -1.0f, 0.0f};
+    float sin_src[4] = {0.0f, 1.0f, 0.0f, -1.0f};
+    float cos[8] __attribute__((aligned(64)));
+    float sin[8] __attribute__((aligned(64)));
     float output[8] __attribute__((aligned(64)));
+    
+    // Convert to duplicated layout for AVX2
+    duplicate_cos_sin(cos_src, cos, 8);
+    duplicate_cos_sin(sin_src, sin, 8);
     
     signal(SIGSEGV, crash_handler);
     signal(SIGBUS, crash_handler);
@@ -520,14 +558,18 @@ static void test_large_size(void) {
     
     const uint32_t N = 8192; // Large but reasonable
     float* x = (float*)aligned_alloc(64, N * sizeof(float));
-    float* cos = (float*)aligned_alloc(64, (N/2) * sizeof(float));
-    float* sin = (float*)aligned_alloc(64, (N/2) * sizeof(float));
+    float* cos_src = (float*)aligned_alloc(64, (N/2) * sizeof(float));
+    float* sin_src = (float*)aligned_alloc(64, (N/2) * sizeof(float));
+    float* cos = (float*)aligned_alloc(64, N * sizeof(float));
+    float* sin = (float*)aligned_alloc(64, N * sizeof(float));
     float* output = (float*)aligned_alloc(64, N * sizeof(float));
     float* expected = (float*)malloc(N * sizeof(float));
     
-    if (!x || !cos || !sin || !output || !expected) {
+    if (!x || !cos_src || !sin_src || !cos || !sin || !output || !expected) {
         TEST_FAIL("Memory allocation failed");
         if (x) free(x);
+        if (cos_src) free(cos_src);
+        if (sin_src) free(sin_src);
         if (cos) free(cos);
         if (sin) free(sin);
         if (output) free(output);
@@ -540,11 +582,15 @@ static void test_large_size(void) {
     }
     for (uint32_t i = 0; i < N/2; i++) {
         float angle = (float)i * 0.1f;
-        cos[i] = cosf(angle);
-        sin[i] = sinf(angle);
+        cos_src[i] = cosf(angle);
+        sin_src[i] = sinf(angle);
     }
     
-    rope_ref(x, cos, sin, expected, N);
+    // Convert to duplicated layout for AVX2
+    duplicate_cos_sin(cos_src, cos, N);
+    duplicate_cos_sin(sin_src, sin, N);
+    
+    rope_ref(x, cos_src, sin_src, expected, N);
     
     signal(SIGSEGV, crash_handler);
     signal(SIGBUS, crash_handler);
@@ -571,6 +617,8 @@ static void test_large_size(void) {
     signal(SIGFPE, SIG_DFL);
     
     free(x);
+    free(cos_src);
+    free(sin_src);
     free(cos);
     free(sin);
     free(output);
@@ -582,12 +630,18 @@ static void test_precision(void) {
     TEST_START("Precision test - compare with reference");
     
     float x[8] __attribute__((aligned(64))) = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
-    float cos[4] __attribute__((aligned(64))) = {0.70710678f, 0.8660254f, 0.5f, 0.0f}; // Various angles
-    float sin[4] __attribute__((aligned(64))) = {0.70710678f, 0.5f, 0.8660254f, 1.0f};
+    float cos_src[4] = {0.70710678f, 0.8660254f, 0.5f, 0.0f}; // Various angles
+    float sin_src[4] = {0.70710678f, 0.5f, 0.8660254f, 1.0f};
+    float cos[8] __attribute__((aligned(64)));
+    float sin[8] __attribute__((aligned(64)));
     float output[8] __attribute__((aligned(64)));
     float expected[8];
     
-    rope_ref(x, cos, sin, expected, 8);
+    // Convert to duplicated layout for AVX2
+    duplicate_cos_sin(cos_src, cos, 8);
+    duplicate_cos_sin(sin_src, sin, 8);
+    
+    rope_ref(x, cos_src, sin_src, expected, 8);
     
     signal(SIGSEGV, crash_handler);
     signal(SIGBUS, crash_handler);
