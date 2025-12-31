@@ -216,8 +216,8 @@ static q_tensor* create_tensor_view(
     strncpy(tensor->name, name, sizeof(tensor->name) - 1);
     tensor->name[sizeof(tensor->name) - 1] = '\0';
     
-    // CRITICAL VALIDATION (Correção 4): Tipo deve ser válido (não Q_TYPE_INVALID)
-    if (tensor->type == Q_TYPE_INVALID || tensor->type != type) {
+    // CRITICAL VALIDATION (Correção 4): Tipo deve corresponder ao esperado
+    if (tensor->type != type) {
         #ifdef DEBUG
         fprintf(stderr, "ERROR: create_tensor_view: invalid type!\n");
         fprintf(stderr, "  Expected type: %d, Got type: %d\n", type, tensor->type);
@@ -230,7 +230,7 @@ static q_tensor* create_tensor_view(
     return tensor;
 }
 
-q_error_code llama_build_graph(q_context* restrict ctx, llama_model* restrict model) {
+q_error_code llama_build_graph(q_context* restrict ctx, q_llama_model* restrict model) {
     // Validate inputs
     if (ctx == NULL || model == NULL) {
         return Q_ERR_NULL_PTR;
@@ -270,7 +270,7 @@ q_error_code llama_build_graph(q_context* restrict ctx, llama_model* restrict mo
     model->config.n_heads = ctx->header->n_heads;
     model->config.n_kv_heads = ctx->header->n_kv_heads;
     model->config.max_seq_len = ctx->header->max_seq_len;
-    model->config.rope_theta = ctx->header->rope_freq_base;  // rope_freq_base stored as rope_theta
+    model->config.rope_freq_base = ctx->header->rope_freq_base;
     
     // Read rms_norm_eps from header if available (version >= 2), otherwise use default
     // Llama 2 uses 1e-6, Llama 3 uses 1e-5
@@ -365,15 +365,15 @@ q_error_code llama_build_graph(q_context* restrict ctx, llama_model* restrict mo
     offset += output_size;
     
     // 4. Allocate layers array
-    model->layers = (llama_layer*)q_arena_alloc(ctx, sizeof(llama_layer) * model->config.n_layers);
+    model->layers = (q_llama_layer*)q_arena_alloc(ctx, sizeof(q_llama_layer) * model->config.n_layers);
     if (model->layers == NULL) {
         return Q_ERR_ARENA_OOM;
     }
     
     // 5. Build each layer
     for (uint32_t i = 0; i < model->config.n_layers; i++) {
-        llama_layer* layer = &model->layers[i];
-        memset(layer, 0, sizeof(llama_layer));
+        q_llama_layer* layer = &model->layers[i];
+        memset(layer, 0, sizeof(q_llama_layer));
         layer->layer_idx = i;
         
         // Attention norm [dim] (FP32)
@@ -571,7 +571,7 @@ q_error_code llama_build_graph(q_context* restrict ctx, llama_model* restrict mo
     
     for (uint32_t i = 0; i < num_pairs; i++) {
         float freq_exp = -2.0f * (float)i / (float)head_dim;
-        model->rope_freqs[i] = powf(model->config.rope_theta, freq_exp);
+        model->rope_freqs[i] = powf(model->config.rope_freq_base, freq_exp);
     }
     
     // Opcional: Pré-calcular cache completo (trade-off memória vs velocidade)
@@ -603,7 +603,7 @@ q_error_code llama_build_graph(q_context* restrict ctx, llama_model* restrict mo
     return Q_OK;
 }
 
-void llama_free_graph(llama_model* restrict model) {
+void llama_free_graph(q_llama_model* restrict model) {
     if (model == NULL) {
         return;
     }
@@ -618,7 +618,7 @@ void llama_free_graph(llama_model* restrict model) {
     model->ctx = NULL;
     
     // Clear configuration
-    memset(&model->config, 0, sizeof(llama_config));
+    memset(&model->config, 0, sizeof(q_llama_config));
 }
 
 // ============================================================================
@@ -630,7 +630,7 @@ void llama_free_graph(llama_model* restrict model) {
 // Returns NULL if invalid parameters
 static float* get_kv_cache_ptr(
     q_context* restrict ctx,
-    const llama_config* restrict config,
+    const q_llama_config* restrict config,
     uint32_t layer_idx,
     uint32_t kv_head_idx,
     uint32_t pos,
@@ -675,7 +675,7 @@ static float* get_kv_cache_ptr(
 // ============================================================================
 
 // Calcular tamanho máximo necessário para scratchpad
-static size_t calculate_layer_scratchpad_size(const llama_config* config, uint32_t seq_len) {
+static size_t calculate_layer_scratchpad_size(const q_llama_config* config, uint32_t seq_len) {
     uint32_t dim = config->dim;
     uint32_t hidden_dim = config->hidden_dim;
     uint32_t head_dim = dim / config->n_heads;
@@ -707,7 +707,7 @@ static size_t calculate_layer_scratchpad_size(const llama_config* config, uint32
 static void init_layer_scratchpad(
     layer_scratchpad* scratch,
     uint8_t* mem_base,
-    const llama_config* config,
+    const q_llama_config* config,
     uint32_t seq_len
 ) {
     uint32_t dim = config->dim;
@@ -797,7 +797,7 @@ static void init_layer_scratchpad(
 // CORRIGIDO: Usa frequências pré-calculadas (elimina powf do hot path)
 // Output: cos_buf[head_dim], sin_buf[head_dim] (duplicated layout: [c0,c0,c1,c1,...])
 static q_error_code generate_rope_cos_sin(
-    const llama_model* restrict model,  // NOVO: recebe model completo
+    const q_llama_model* restrict model,  // NOVO: recebe model completo
     uint32_t head_dim,
     uint32_t pos,
     float* restrict cos_buf,  // Output [head_dim], 32-byte aligned
@@ -847,9 +847,17 @@ static q_error_code token_embedding_lookup(
     Q_VALIDATE_PTR_OR_RETURN(output, Q_ERR_INVALID_ARG);
     Q_VALIDATE_NONZERO_OR_RETURN(seq_len, Q_ERR_INVALID_SIZE);
     
-    // NOTE: token_embd->type is validated in llama_build_graph()
-    // Type validation here is redundant unless arena is reset externally
-    // AddressSanitizer will catch memory corruption in DEBUG mode
+    // CRITICAL VALIDATION: Verify type is Q_F32
+    // This validation is necessary because arena might be reset externally
+    // or memory corruption might occur
+    if (token_embd->type != Q_F32) {
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: token_embedding_lookup: token_embd->type = %d, expected Q_F32 (%d)\n",
+                (int)token_embd->type, (int)Q_F32);
+        abort();
+        #endif
+        return Q_ERR_INVALID_DTYPE;
+    }
     
     uint32_t vocab_size = token_embd->ne[0];
     uint32_t dim = token_embd->ne[1];
@@ -875,10 +883,10 @@ static q_error_code token_embedding_lookup(
 // Implements: Attention block + MLP block with residuals
 // CORRIGIDO: Usa scratchpad reutilizável (Correção 1)
 static q_error_code llama_layer_forward(
-    llama_layer* restrict layer,
+    q_llama_layer* restrict layer,
     q_context* restrict ctx,
-    const llama_model* restrict model,  // NOVO: necessário para RoPE pré-calculado
-    const llama_config* restrict config,
+    const q_llama_model* restrict model,  // NOVO: necessário para RoPE pré-calculado
+    const q_llama_config* restrict config,
     const float* restrict x,           // Input [seq_len, dim]
     float* restrict output,            // Output [seq_len, dim]
     uint32_t layer_idx,
@@ -890,10 +898,10 @@ static q_error_code llama_layer_forward(
 // Helper: Attention forward pass with GQA support
 // CORRIGIDO: Usa scratchpad reutilizável (Correção 1)
 static q_error_code llama_attention_forward(
-    llama_layer* restrict layer,
+    q_llama_layer* restrict layer,
     q_context* restrict ctx,
-    const llama_model* restrict model,  // NOVO: necessário para RoPE pré-calculado
-    const llama_config* restrict config,
+    const q_llama_model* restrict model,  // NOVO: necessário para RoPE pré-calculado
+    const q_llama_config* restrict config,
     const float* restrict x,           // Input [seq_len, dim]
     float* restrict output,            // Output [seq_len, dim]
     uint32_t layer_idx,
@@ -1238,9 +1246,9 @@ static q_error_code llama_attention_forward(
 // Helper: MLP forward pass (SwiGLU)
 // CORRIGIDO: Usa scratchpad reutilizável (Correção 1)
 static q_error_code llama_mlp_forward(
-    llama_layer* restrict layer,
+    q_llama_layer* restrict layer,
     q_context* restrict ctx __attribute__((unused)),  // Pode não ser usado em todas as implementações
-    const llama_config* restrict config,
+    const q_llama_config* restrict config,
     const float* restrict x,           // Input [seq_len, dim]
     float* restrict output,             // Output [seq_len, dim]
     uint32_t seq_len,
@@ -1341,10 +1349,10 @@ static q_error_code llama_mlp_forward(
 // Helper: Single layer forward pass
 // CORRIGIDO: Usa scratchpad reutilizável (Correção 1)
 static q_error_code llama_layer_forward(
-    llama_layer* restrict layer,
+    q_llama_layer* restrict layer,
     q_context* restrict ctx,
-    const llama_model* restrict model,  // NOVO: necessário para RoPE pré-calculado
-    const llama_config* restrict config,
+    const q_llama_model* restrict model,  // NOVO: necessário para RoPE pré-calculado
+    const q_llama_config* restrict config,
     const float* restrict x,           // Input [seq_len, dim]
     float* restrict output,            // Output [seq_len, dim]
     uint32_t layer_idx,
@@ -1428,7 +1436,7 @@ static q_error_code llama_layer_forward(
 
 // Main forward pass function
 q_error_code llama_forward(
-    llama_model* restrict model,
+    q_llama_model* restrict model,
     q_context* restrict ctx,
     const uint32_t* restrict tokens,
     uint32_t seq_len,
@@ -1552,28 +1560,21 @@ q_error_code llama_forward(
     // For prefill (seq_len > 1), we only need logits for last position
     
     // CRITICAL FIX: Ensure last_token is 32-byte aligned
-    // If x_final is 64-byte aligned and dim*sizeof(float) is multiple of 32,
-    // then last_token will be 32-byte aligned. But we need to verify.
+    // Always allocate aligned buffer to guarantee alignment, regardless of theoretical calculation
+    // This avoids issues with pointer arithmetic that may not reflect actual memory alignment
     const float* last_token_ptr = x_final + (size_t)(seq_len - 1) * dim;
-    uintptr_t last_token_addr = (uintptr_t)last_token_ptr;
-    uintptr_t misalignment = last_token_addr % 32;
     
-    // If misaligned, allocate aligned buffer and copy
-    const float* last_token;
-    float* last_token_aligned = NULL;
-    if (misalignment != 0) {
-        // Allocate aligned buffer
-        size_t aligned_size = Q_ALIGN_SIZE(dim * sizeof(float));
-        last_token_aligned = (float*)q_arena_alloc(ctx, aligned_size);
-        if (last_token_aligned == NULL) {
-            return Q_ERR_ARENA_OOM;
-        }
-        // Copy last token to aligned buffer
-        memcpy(last_token_aligned, last_token_ptr, dim * sizeof(float));
-        last_token = last_token_aligned;
-    } else {
-        last_token = last_token_ptr;
+    // Always allocate aligned buffer for last_token to guarantee 32-byte alignment
+    // This is safer than relying on pointer arithmetic which may not reflect actual memory alignment
+    size_t aligned_size = Q_ALIGN_SIZE(dim * sizeof(float));
+    float* last_token_aligned = (float*)q_arena_alloc(ctx, aligned_size);
+    if (last_token_aligned == NULL) {
+        return Q_ERR_ARENA_OOM;
     }
+    
+    // Copy last token to aligned buffer
+    memcpy(last_token_aligned, last_token_ptr, dim * sizeof(float));
+    const float* last_token = last_token_aligned;
     
     // Create tensor view for last token [1, dim]
     q_tensor last_token_tensor = {

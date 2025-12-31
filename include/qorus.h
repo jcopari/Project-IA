@@ -12,7 +12,13 @@
 
 // Inicializar memória (Tier 1: Mmap do arquivo modelo)
 // Returns: Q_OK on success, negative q_error_code on error
+// Default: Q_MMAP_LAZY (fast startup, page faults on first access)
 q_error_code q_init_memory(q_context* restrict ctx, const char* model_path);
+
+// Inicializar memória com estratégia configurável
+// strategy: Q_MMAP_LAZY (fast startup) or Q_MMAP_EAGER (fast first inference)
+// Returns: Q_OK on success, negative q_error_code on error
+q_error_code q_init_memory_ex(q_context* restrict ctx, const char* model_path, q_mmap_strategy strategy);
 
 // Alocar KV Cache (Tier 2: Buffer persistente)
 // Returns: Q_OK on success, negative q_error_code on error
@@ -186,12 +192,12 @@ q_error_code q_softmax_f32_avx2(
 // Returns: Q_OK on success, negative q_error_code on error
 q_error_code llama_build_graph(
     q_context* restrict ctx,
-    llama_model* restrict model
+    q_llama_model* restrict model
 );
 
 // Free model graph (frees arena allocations, but NOT mmap)
 // Note: Does NOT free mmap'd weights (call q_free_memory for that)
-void llama_free_graph(llama_model* restrict model);
+void llama_free_graph(q_llama_model* restrict model);
 
 // Forward pass through Llama-3 model
 // Executes inference: tokens -> embeddings -> layers -> logits
@@ -204,13 +210,67 @@ void llama_free_graph(llama_model* restrict model);
 // - logits: Output buffer [vocab_size], 32-byte aligned
 // Returns: Q_OK on success, negative q_error_code on validation failure
 q_error_code llama_forward(
-    llama_model* restrict model,
+    q_llama_model* restrict model,
     q_context* restrict ctx,
     const uint32_t* restrict tokens,
     uint32_t seq_len,
     uint32_t pos,
     float* restrict logits
 );
+
+// ============================================================================
+// Tokenizer API (BPE - Byte Pair Encoding)
+// ============================================================================
+
+// Load tokenizer from binary file
+// Preconditions:
+// - tok: Uninitialized tokenizer structure
+// - tokenizer_path: Path to tokenizer binary file
+// Returns: Q_OK on success, negative q_error_code on error
+q_error_code q_tokenizer_load(q_tokenizer* restrict tok, const char* tokenizer_path);
+
+// Encode text into token IDs
+// Preconditions:
+// - tok: Initialized tokenizer (from q_tokenizer_load)
+// - text: UTF-8 encoded text string (null-terminated)
+// - tokens_out: Output buffer for token IDs (must be pre-allocated, size >= max_tokens)
+// - num_tokens_out: Output parameter for number of tokens written
+// - max_tokens: Maximum number of tokens to write (buffer size)
+// - add_bos: If true, prepend BOS token
+// - add_eos: If true, append EOS token
+// Returns: Q_OK on success, Q_ERR_ARENA_OOM if buffer too small, negative on error
+q_error_code q_tokenizer_encode(
+    q_tokenizer* restrict tok,
+    const char* restrict text,
+    uint32_t* restrict tokens_out,
+    uint32_t* restrict num_tokens_out,
+    uint32_t max_tokens,
+    bool add_bos,
+    bool add_eos
+);
+
+// Decode token IDs into text
+// Preconditions:
+// - tok: Initialized tokenizer
+// - tokens: Array of token IDs [num_tokens]
+// - num_tokens: Number of tokens to decode
+// - text_out: Output buffer for text (must be pre-allocated)
+// - text_buf_size: Size of text_out buffer in bytes
+// Returns: Q_OK on success, Q_ERR_ARENA_OOM if buffer too small, negative on error
+q_error_code q_tokenizer_decode(
+    q_tokenizer* restrict tok,
+    const uint32_t* restrict tokens,
+    uint32_t num_tokens,
+    char* restrict text_out,
+    size_t text_buf_size
+);
+
+// Free tokenizer resources
+// Preconditions:
+// - tok: Initialized tokenizer
+// Postconditions:
+// - All memory freed, tokenizer invalidated
+void q_tokenizer_free(q_tokenizer* restrict tok);
 
 #endif // QORUS_H
 

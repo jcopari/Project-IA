@@ -139,7 +139,14 @@ q_error_code q_matmul_f32_avx2(
     // Use explicit 32-byte alignment check (not Q_ALIGN which is 64)
     if (!A_needs_unaligned) {
         // Only validate if we're going to use aligned loads (32-byte alignment required)
-        if (((uintptr_t)A->data % 32) != 0) {
+        uintptr_t A_addr = (uintptr_t)A->data;
+        if (A_addr % 32 != 0) {
+            #ifdef DEBUG
+            fprintf(stderr, "ERROR: q_matmul_f32_avx2: A->data not 32-byte aligned: %p (offset: %zu)\n",
+                    A->data, A_addr % 32);
+            fprintf(stderr, "  A->nb[0]=%zu, A_needs_unaligned=%d\n", A->nb[0], A_needs_unaligned);
+            abort();
+            #endif
             return Q_ERR_MISALIGNED;
         }
     }

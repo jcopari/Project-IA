@@ -46,6 +46,15 @@ typedef enum {
     Q_ERR_INVALID_SIZE = -15      // Invalid size (zero, not multiple of N, etc.)
 } q_error_code;
 
+// ============================================================================
+// Memory Mapping Strategy
+// ============================================================================
+
+typedef enum {
+    Q_MMAP_LAZY = 0,      // Lazy loading (fast startup, page faults on first access)
+    Q_MMAP_EAGER = 1      // Eager loading (slow startup, fast first inference via MAP_POPULATE)
+} q_mmap_strategy;
+
 #ifdef DEBUG
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,66 +110,57 @@ typedef enum {
 
 // Non-zero validation - returns error code
 #define Q_VALIDATE_NONZERO_OR_RETURN(value, error_code) \
-    Q_VALIDATE_OR_RETURN((value) > 0, (error_code))
+    Q_VALIDATE_OR_RETURN((value) != 0, (error_code))
 
-// Overflow validation (for multiplication) - returns error code
-#define Q_VALIDATE_NO_OVERFLOW_OR_RETURN(a, b, error_code) \
-    Q_VALIDATE_OR_RETURN((b) == 0 || (a) <= UINT32_MAX / (b), (error_code))
-
-// Validation macros for functions returning void* (like q_arena_alloc)
-// Returns NULL on failure in Release, aborts in DEBUG
-#ifdef DEBUG
-#define Q_VALIDATE_OR_RETURN_NULL(condition) \
-    do { \
-        if (__builtin_expect(!(condition), 0)) { \
-            fprintf(stderr, "ERROR: Validation failed at %s:%d\n", \
-                    __FILE__, __LINE__); \
-            abort(); \
-        } \
-    } while (0)
-#else
-#define Q_VALIDATE_OR_RETURN_NULL(condition) \
-    do { \
-        if (__builtin_expect(!(condition), 0)) { \
-            return NULL; \
-        } \
-    } while (0)
-#endif
-
-#define Q_VALIDATE_PTR_OR_RETURN_NULL(ptr) \
-    Q_VALIDATE_OR_RETURN_NULL((ptr) != NULL)
+// Overflow validation - returns error code
+#define Q_VALIDATE_NO_OVERFLOW_OR_RETURN(a, b) \
+    Q_VALIDATE_OR_RETURN((a) <= UINT32_MAX / (b), Q_ERR_OVERFLOW)
 
 // ============================================================================
-// Debug Print Macros (Only Active in DEBUG Mode)
+// Data Types
 // ============================================================================
-
-// Debug print macro: Only prints in DEBUG mode, zero overhead in Release
-#ifdef DEBUG
-#define Q_DEBUG_PRINT(...) do { \
-    fprintf(stderr, __VA_ARGS__); \
-} while(0)
-#else
-#define Q_DEBUG_PRINT(...) ((void)0)
-#endif
-
-// Debug write to stderr (for direct write() calls)
-#ifdef DEBUG
-#define Q_DEBUG_WRITE(msg, len) do { \
-    write(2, msg, len); \
-} while(0)
-#else
-#define Q_DEBUG_WRITE(msg, len) ((void)0)
-#endif
 
 typedef enum {
-    Q_TYPE_INVALID = 0,  // Zero DEVE ser erro explícito (Fail-Fast)
-    Q_F32  = 1,
-    Q_Q8_0 = 2, // Pesos (Embeddings/Output)
-    Q_Q4_0 = 3  // Pesos (Dense Layers)
+    Q_F32  = 0,
+    Q_Q8_0 = 1, // Weights (Embeddings/Output)
+    Q_Q4_0 = 2  // Weights (Dense Layers)
 } q_dtype;
 
-// Q4_0 block structure (20 bytes: 16 bytes quantized data + 4 bytes scale)
-// Each byte contains 2 quantized values (4 bits each, range 0-15)
+// ============================================================================
+// Tokenizer Types (BPE)
+// ============================================================================
+
+// BPE Merge Rule: (token_id1, token_id2) -> merged_token_id
+typedef struct {
+    uint32_t token_id1;   // First token ID
+    uint32_t token_id2;   // Second token ID
+    uint32_t merged_id;   // Resulting merged token ID
+} q_bpe_merge;
+
+// Tokenizer Structure (BPE - Byte Pair Encoding)
+typedef struct {
+    // Vocabulary: Array of token strings (variable length)
+    char** vocab;              // Array of token strings [vocab_size]
+    uint32_t vocab_size;       // Total vocabulary size
+    
+    // BPE Merges: Array of merge rules
+    q_bpe_merge* merges;      // Array of BPE merge rules [num_merges]
+    uint32_t num_merges;       // Number of BPE merges
+    
+    // Special Tokens
+    uint32_t bos_token_id;     // Beginning of sequence token ID
+    uint32_t eos_token_id;     // End of sequence token ID
+    uint32_t pad_token_id;     // Padding token ID
+    
+    // Initialization flag
+    bool initialized;          // True if tokenizer loaded successfully
+} q_tokenizer;
+
+// ============================================================================
+// Tensor Types
+// ============================================================================
+
+// Q4_0 Quantization Block (20 bytes: 16 bytes qs + 4 bytes scale)
 // Dequantization: value = (quantized - 8) * scale
 typedef struct {
     uint8_t  qs[16];  // 16 bytes: 32 quantized values (4 bits each)
@@ -222,60 +222,48 @@ typedef struct {
     uint32_t hidden_dim;
     uint32_t n_layers;
     uint32_t n_heads;
-    uint32_t n_kv_heads;      // GQA support
+    uint32_t n_kv_heads;      // GQA: Grouped Query Attention
     uint32_t max_seq_len;
-    float    rope_theta;      // RoPE base frequency (Llama 3 uses theta)
-    float    rms_norm_eps;    // RMSNorm epsilon for numerical stability
-} llama_config;
+    float    rope_freq_base;
+    float    rms_norm_eps;
+} q_llama_config;
 
-// Llama-3 Layer Structure (128 bytes = 2 cache lines, aligned to 64 bytes)
-// Contains only VIEWS (lightweight pointers), not heavy data
+// Llama-3 Layer Structure (per-layer tensor views)
 typedef struct {
-    // Attention weights (4 pointers = 32 bytes)
-    q_tensor* wq;              // Query weights
-    q_tensor* wk;              // Key weights (GQA: n_kv_heads < n_heads)
-    q_tensor* wv;              // Value weights (GQA: n_kv_heads < n_heads)
-    q_tensor* wo;              // Output projection
-    
-    // MLP weights (3 pointers = 24 bytes)
-    q_tensor* w_gate;          // Gate projection (SiLU gate)
-    q_tensor* w_up;            // Up projection
-    q_tensor* w_down;          // Down projection
-    
-    // Normalization weights (2 pointers = 16 bytes)
-    q_tensor* attn_norm;       // Pre-attention RMSNorm
-    q_tensor* ffn_norm;        // Pre-MLP RMSNorm
-    
-    // Metadata (8 bytes)
-    uint32_t layer_idx;        // Layer index (for debugging/performance)
-    uint32_t _reserved;        // Reserved for future use
-    
-    // Padding explícito para 128 bytes (2 cache lines)
-    // 128 - (32 + 24 + 16 + 8) = 48 bytes
-    uint8_t _padding[48];
-} __attribute__((aligned(64))) llama_layer;
+    uint32_t layer_idx;       // Layer index (0..n_layers-1)
+    q_tensor* attn_norm;      // [dim] (FP32)
+    q_tensor* wq;             // [dim, dim] (Q4_0)
+    q_tensor* wk;             // [dim, n_kv_heads*head_dim] (Q4_0)
+    q_tensor* wv;             // [dim, n_kv_heads*head_dim] (Q4_0)
+    q_tensor* wo;             // [dim, dim] (Q4_0)
+    q_tensor* ffn_norm;       // [dim] (FP32)
+    q_tensor* w_gate;         // [dim, hidden_dim] (Q4_0)
+    q_tensor* w_up;           // [dim, hidden_dim] (Q4_0)
+    q_tensor* w_down;        // [hidden_dim, dim] (Q4_0)
+} q_llama_layer;
 
-// Compile-time assertions: Verificar tamanho e alinhamento
-_Static_assert(sizeof(llama_layer) == 128, 
-               "llama_layer must be exactly 128 bytes for cache alignment");
-_Static_assert(_Alignof(llama_layer) == 64,
-               "llama_layer must be 64-byte aligned");
-
-// Llama-3 Model Structure (complete model)
+// Llama-3 Model Graph (tensor views pointing to mmap)
 typedef struct {
-    llama_config config;       // Model configuration
-    q_tensor*    token_embd;   // Token embeddings [vocab_size, dim]
-    q_tensor*    output_norm;  // Output layer normalization [dim]
-    q_tensor*    output;       // Output projection [vocab_size, dim]
-    llama_layer* layers;       // Array contíguo de layers [n_layers]
-    q_context*   ctx;          // Memory context (Tier 1/2/3)
+    q_llama_config config;
     
-    // RoPE pre-computation (Correção 2: Otimização crítica)
-    float*       rope_freqs;        // [head_dim/2] frequências base pré-calculadas
-    float*       rope_cos_cache;     // Opcional: [max_seq_len, head_dim] cache completo
-    float*       rope_sin_cache;     // Opcional: [max_seq_len, head_dim] cache completo
-    bool         rope_cache_enabled; // Flag se cache completo está disponível
-} llama_model;
+    // Embeddings
+    q_tensor* token_embd;     // [vocab_size, dim] (FP32)
+    
+    // Output Layer
+    q_tensor* output_norm;     // [dim] (FP32)
+    q_tensor* output;          // [vocab_size, dim] (FP32)
+    
+    // Layers (array of layer structures)
+    q_llama_layer* layers;    // [n_layers] array of layer structures
+    
+    // RoPE cache (optional, for performance)
+    float* rope_freqs;        // Pre-computed RoPE frequencies [head_dim/2]
+    bool rope_cache_enabled;  // Flag: if true, use cached cos/sin
+    float* rope_cos_cache;   // Cached cos values [max_seq_len, head_dim/2]
+    float* rope_sin_cache;   // Cached sin values [max_seq_len, head_dim/2]
+    
+    // Context pointer (for arena access)
+    q_context* ctx;           // Memory context (for arena allocations)
+} q_llama_model;
 
 #endif // QORUS_TYPES_H
-

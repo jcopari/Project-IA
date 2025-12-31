@@ -43,16 +43,45 @@ def write_header(f, config):
     pos = f.tell()
     assert pos % Q_ALIGN == 0, f"Header not aligned: {pos}"
 
-def write_tensor(f, name, data):
-    """Escreve tensor com alinhamento garantido e zero-copy quando possível."""
+def pad_vocab_size(vocab_size):
+    """Garante que vocab_size seja múltiplo de 32 para compatibilidade com Q4_0."""
+    remainder = vocab_size % 32
+    if remainder == 0:
+        return vocab_size, 0
+    padding = 32 - remainder
+    padded_size = vocab_size + padding
+    return padded_size, padding
+
+def write_tensor(f, name, data, pad_rows=False):
+    """Escreve tensor com alinhamento garantido e zero-copy quando possível.
+    
+    Args:
+        f: File handle
+        name: Tensor name (for logging)
+        data: NumPy array
+        pad_rows: Se True, adiciona padding nas linhas para múltiplo de 32 (para vocab_size)
+    """
     pos = f.tell()
     
-    # Calcular padding necessário
+    # Calcular padding necessário para alinhamento de arquivo
     padding = (Q_ALIGN - (pos % Q_ALIGN)) % Q_ALIGN
     
-    # Escrever padding
+    # Escrever padding de arquivo
     if padding > 0:
         f.write(b'\x00' * padding)
+    
+    # Padding de linhas (para vocab_size - CRITICAL FIX)
+    original_shape = data.shape
+    if pad_rows and len(data.shape) >= 1:
+        original_rows = data.shape[0]
+        padded_rows, row_padding = pad_vocab_size(original_rows)
+        
+        if row_padding > 0:
+            # Adicionar padding com zeros nas linhas
+            padding_shape = (row_padding,) + data.shape[1:]
+            padding_data = np.zeros(padding_shape, dtype=data.dtype)
+            data = np.vstack([data, padding_data])
+            print(f"  PADDED {name}: {original_rows} → {padded_rows} rows (+{row_padding} padding)")
     
     # Validação de contiguidade e endianness
     if not data.flags['C_CONTIGUOUS']:
@@ -115,6 +144,18 @@ def generate_dummy_model(output_path, n_layers=2):
         'rope_freq_base': 500000.0,
     }
     
+    # CRITICAL FIX: Garantir vocab_size múltiplo de 32 (para compatibilidade com Q4_0)
+    original_vocab_size = config['vocab_size']
+    padded_vocab_size, vocab_padding = pad_vocab_size(original_vocab_size)
+    if vocab_padding > 0:
+        print(f"WARNING: vocab_size {original_vocab_size} não é múltiplo de 32. "
+              f"Será preenchido para {padded_vocab_size} no arquivo.")
+        # Manter original_vocab_size para gerar dados, mas usar padded_vocab_size no header
+        config_for_header = config.copy()
+        config_for_header['vocab_size'] = padded_vocab_size
+    else:
+        config_for_header = config
+    
     # Ensure dim is multiple of 32 for Q4_0 compatibility
     assert config['dim'] % 32 == 0, f"dim ({config['dim']}) must be multiple of 32"
     assert config['hidden_dim'] % 32 == 0, f"hidden_dim ({config['hidden_dim']}) must be multiple of 32"
@@ -123,27 +164,31 @@ def generate_dummy_model(output_path, n_layers=2):
     kv_dim = config['n_kv_heads'] * head_dim
     
     print("Generating dummy model (FASE 3 layout)...")
-    print(f"Config: vocab_size={config['vocab_size']}, dim={config['dim']}, "
+    print(f"Config: vocab_size={config['vocab_size']} (original), dim={config['dim']}, "
           f"n_layers={config['n_layers']}, hidden_dim={config['hidden_dim']}")
+    if vocab_padding > 0:
+        print(f"  vocab_size no arquivo: {padded_vocab_size} (com padding)")
     print(f"  head_dim={head_dim}, kv_dim={kv_dim}")
     
     with open(output_path, 'wb') as f:
-        # Escrever header
-        write_header(f, config)
+        # Escrever header com vocab_size padded
+        write_header(f, config_for_header)
         
         print("\nWriting tensors...")
         
         # 1. Token embeddings [vocab_size, dim] (FP32)
-        embd = np.random.randn(config['vocab_size'], config['dim']).astype(np.float32)
-        write_tensor(f, 'token_embd.weight', embd)
+        # CRITICAL: Usar vocab_size original para gerar dados, padding será adicionado automaticamente
+        embd = np.random.randn(original_vocab_size, config['dim']).astype(np.float32)
+        write_tensor(f, 'token_embd.weight', embd, pad_rows=True)
         
         # 2. Output normalization [dim] (FP32)
         output_norm = np.random.randn(config['dim']).astype(np.float32)
         write_tensor(f, 'output_norm.weight', output_norm)
         
         # 3. Output projection [vocab_size, dim] (FP32)
-        output = np.random.randn(config['vocab_size'], config['dim']).astype(np.float32)
-        write_tensor(f, 'output.weight', output)
+        # CRITICAL: Esta é a camada crítica que precisa de padding para Q4_0
+        output = np.random.randn(original_vocab_size, config['dim']).astype(np.float32)
+        write_tensor(f, 'output.weight', output, pad_rows=True)
         
         # 4. Layers
         for layer_idx in range(config['n_layers']):
@@ -193,7 +238,88 @@ def generate_dummy_model(output_path, n_layers=2):
     print(f"  Tensors: {file_size - Q_HEADER_SIZE:,} bytes")
     print(f"  Layers: {config['n_layers']}")
 
+def write_tokenizer(tokenizer_path, vocab_size=32000):
+    """Export tokenizer to binary format for Qorus-IA.
+    
+    Creates a minimal tokenizer with:
+    - Vocab: 256 base tokens (bytes 0-255) + special tokens
+    - BPE merges: Empty (simplified for now)
+    - Special tokens: BOS, EOS, PAD
+    
+    Args:
+        tokenizer_path: Output path for tokenizer binary file
+        vocab_size: Vocabulary size parameter (used for special token IDs, not actual vocab size)
+    """
+    TOKENIZER_MAGIC = 0x51544B52  # 'QTKR'
+    TOKENIZER_VERSION = 1
+    
+    # Base vocabulary: 256 bytes (0-255)
+    BASE_VOCAB_SIZE = 256
+    
+    # Special token IDs (after base vocab)
+    BOS_TOKEN_ID = BASE_VOCAB_SIZE
+    EOS_TOKEN_ID = BASE_VOCAB_SIZE + 1
+    PAD_TOKEN_ID = BASE_VOCAB_SIZE + 2
+    
+    # Calculate actual vocab size (base + special tokens)
+    actual_vocab_size = BASE_VOCAB_SIZE + 3  # 256 base + 3 special = 259
+    
+    print(f"Writing tokenizer to {tokenizer_path}...")
+    print(f"  Base vocab: {BASE_VOCAB_SIZE} tokens (bytes 0-255)")
+    print(f"  Special tokens: BOS={BOS_TOKEN_ID}, EOS={EOS_TOKEN_ID}, PAD={PAD_TOKEN_ID}")
+    print(f"  Total vocab size: {actual_vocab_size}")
+    
+    with open(tokenizer_path, 'wb') as f:
+        # Write header (32 bytes)
+        header = struct.pack('<IIIIIIII',
+            TOKENIZER_MAGIC,      # magic
+            TOKENIZER_VERSION,    # version
+            actual_vocab_size,    # vocab_size
+            0,                    # num_merges (simplified: no BPE merges for now)
+            BOS_TOKEN_ID,        # bos_token_id
+            EOS_TOKEN_ID,        # eos_token_id
+            PAD_TOKEN_ID,        # pad_token_id
+            0                     # reserved
+        )
+        assert len(header) == 32, f"Header size mismatch: {len(header)}"
+        f.write(header)
+        
+        # Write vocab: Base tokens (bytes 0-255)
+        for i in range(256):
+            token_bytes = bytes([i])  # Single byte token
+            length = len(token_bytes)
+            assert length == 1, f"Base token length must be 1, got {length}"
+            f.write(struct.pack('B', length))
+            f.write(token_bytes)
+        
+        # Write special tokens
+        special_tokens = [
+            (BOS_TOKEN_ID, b"<|begin_of_text|>"),
+            (EOS_TOKEN_ID, b"<|end_of_text|>"),
+            (PAD_TOKEN_ID, b"<|finetune_right_pad_id|>"),
+        ]
+        
+        for token_id, token_bytes in special_tokens:
+            length = len(token_bytes)
+            assert length > 0 and length <= 255, f"Token length invalid: {length}"
+            f.write(struct.pack('B', length))
+            f.write(token_bytes)
+        
+        # No BPE merges for now (simplified)
+        # Merges would be written here if implemented
+        
+    file_size = os.path.getsize(tokenizer_path)
+    print(f"✓ Wrote tokenizer: {tokenizer_path}")
+    print(f"  Total size: {file_size:,} bytes")
+
 if __name__ == "__main__":
-    output_path = sys.argv[1] if len(sys.argv) > 1 else "model_dummy.qorus"
-    n_layers = int(sys.argv[2]) if len(sys.argv) > 2 else 2
-    generate_dummy_model(output_path, n_layers=n_layers)
+    if len(sys.argv) > 1 and sys.argv[1] == "--tokenizer":
+        # Generate tokenizer only
+        tokenizer_path = sys.argv[2] if len(sys.argv) > 2 else "tokenizer.bin"
+        vocab_size = int(sys.argv[3]) if len(sys.argv) > 3 else 32000
+        write_tokenizer(tokenizer_path, vocab_size)
+    else:
+        # Generate model (default)
+        output_path = sys.argv[1] if len(sys.argv) > 1 else "model_dummy.qorus"
+        n_layers = int(sys.argv[2]) if len(sys.argv) > 2 else 2
+        generate_dummy_model(output_path, n_layers=n_layers)

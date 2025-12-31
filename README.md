@@ -11,7 +11,7 @@ High-Performance Generic Deep Learning Framework in Pure C - No Architectural Li
 **Constraint:** Zero-Malloc in Hot Path (maintained).
 
 **Status:** 
-- **v2.0:** FASE 2 & 3.2 Complete - All mathematical kernels and model graph building implemented and validated. Training capability planning complete (2024-12-30).
+- **v2.0:** FASE 2, 3.2 & 4.1 Complete - All mathematical kernels, model graph building, and tokenizer implemented and validated. Training capability planning complete (2024-12-30).
 - **v3.0:** Generic framework planning complete (2024-12-30). Ready for FASE 5.0 (Core Abstraction).
 
 ## Features
@@ -47,6 +47,17 @@ High-Performance Generic Deep Learning Framework in Pure C - No Architectural Li
 - Zero-copy tensor views from mmap'd `.qorus` files
 - Complete model structure initialization
 - Comprehensive validation and adversarial testing
+
+### Tokenizer (FASE 4)
+✅ **FASE 4.1:** BPE Tokenizer (`src/tokenizer/bpe.c`)
+- Load tokenizer from binary format (`q_tokenizer_load`)
+- Encode text → tokens (`q_tokenizer_encode`)
+- Decode tokens → text (`q_tokenizer_decode`)
+- Binary format: Header + Vocab + BPE Merges
+- Vocab: 256 base tokens + 3 special tokens (BOS, EOS, PAD)
+- Export tool: `tools/convert_llama.py --tokenizer tokenizer.bin`
+- Tests: All passing (Release + Debug)
+- Example: `examples/hello_world.c` working
 
 ### Testing & Tools
 ✅ **Utility Tests:** `q_strerror()` validation (23 tests)  

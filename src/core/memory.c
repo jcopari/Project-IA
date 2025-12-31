@@ -46,8 +46,11 @@ static inline size_t safe_align_size(size_t size) {
     return ((size + Q_ALIGN - 1) & ~(Q_ALIGN - 1));
 }
 
-// Inicializar memória (Tier 1: Mmap)
-q_error_code q_init_memory(q_context* restrict ctx, const char* model_path) {
+// Inicializar memória com estratégia configurável (Tier 1: Mmap)
+q_error_code q_init_memory_ex(q_context* restrict ctx, const char* model_path, q_mmap_strategy strategy) {
+    Q_VALIDATE_PTR_OR_RETURN(ctx, Q_ERR_INVALID_ARG);
+    Q_VALIDATE_PTR_OR_RETURN(model_path, Q_ERR_INVALID_ARG);
+    
     int fd = open(model_path, O_RDONLY);
     if (fd < 0) {
         return Q_ERR_FILE_OPEN;
@@ -67,9 +70,16 @@ q_error_code q_init_memory(q_context* restrict ctx, const char* model_path) {
 
     // Mmap com flags seguras para portabilidade
     int flags = MAP_PRIVATE;
-    #ifdef __linux__
-    flags |= MAP_POPULATE;  // Apenas Linux pré-carrega páginas
-    #endif
+    
+    // CRITICAL FIX: Tornar estratégia configurável
+    // Q_MMAP_EAGER: Pré-carregar páginas (lento startup, rápida primeira inferência)
+    // Q_MMAP_LAZY: Carregar sob demanda (rápido startup, page faults na primeira inferência)
+    if (strategy == Q_MMAP_EAGER) {
+        #ifdef __linux__
+        flags |= MAP_POPULATE;  // Apenas Linux pré-carrega páginas
+        #endif
+    }
+    // else: Q_MMAP_LAZY (padrão) - não usar MAP_POPULATE
 
     void* mmap_ptr = mmap(NULL, file_size, PROT_READ, flags, fd, 0);
     close(fd);
@@ -79,6 +89,7 @@ q_error_code q_init_memory(q_context* restrict ctx, const char* model_path) {
     }
 
     // Hints de performance (com fallback silencioso)
+    // Sempre usar madvise para hints assíncronos (não bloqueia)
     #if defined(__linux__) || defined(__FreeBSD__)
     // Linux e FreeBSD suportam madvise completo
     madvise(mmap_ptr, file_size, MADV_SEQUENTIAL | MADV_WILLNEED);
@@ -104,6 +115,11 @@ q_error_code q_init_memory(q_context* restrict ctx, const char* model_path) {
     ctx->header = header;
 
     return Q_OK;
+}
+
+// Wrapper para compatibilidade (padrão: LAZY para melhor UX)
+q_error_code q_init_memory(q_context* restrict ctx, const char* model_path) {
+    return q_init_memory_ex(ctx, model_path, Q_MMAP_LAZY);
 }
 
 // Alocar KV Cache (Tier 2: Persistent)
@@ -220,6 +236,19 @@ void* q_arena_alloc(q_context* restrict ctx, size_t size) {
 
     // Return pointer and update head
     void* ptr = (uint8_t*)ctx->scratch_buffer + ctx->scratch_head;
+    
+    // CRITICAL FIX: Ensure scratch_head remains aligned to Q_ALIGN (64 bytes)
+    // This guarantees that subsequent allocations are also aligned
+    // aligned_size is already aligned to Q_ALIGN, so new_head should be aligned
+    // But we verify this invariant to catch any bugs
+    #ifdef DEBUG
+    if (new_head % Q_ALIGN != 0) {
+        fprintf(stderr, "ERROR: q_arena_alloc: new_head (%zu) not aligned to %d bytes\n", 
+                new_head, Q_ALIGN);
+        abort();
+    }
+    #endif
+    
     ctx->scratch_head = new_head;
 
     Q_ASSERT_ALIGNED(ptr);

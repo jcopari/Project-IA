@@ -1,7 +1,7 @@
 # Qorus-IA v2.0 - Project Status
 
-**Last Updated:** 2025-12-31  
-**Current Phase:** FASE 3.2 Complete + Low-Priority Technical Debt Resolved + Robustness Improvements Applied
+**Last Updated:** 2025-01-02  
+**Current Phase:** FASE 3.3 Complete (Forward Pass) + FASE 4.1 Complete (Tokenizer) + FASE 3.2 Complete + Low-Priority Technical Debt Resolved + Robustness Improvements Applied
 
 ---
 
@@ -305,22 +305,36 @@ The following training components are planned for portation from MetaIA v1.4.0 t
 - MetaIA `#ifdef DEBUG` → New-QorusIA always-active validation
 - MetaIA `tensor_*` → New-QorusIA `q_*` naming
 
-### FASE 3: Model Architecture (Partially Complete)
+### ✅ FASE 3: Model Architecture (Complete)
 
-- ⏳ **FASE 3.3: Forward Pass** (`src/core/model.c`)
-  - Implement `q_model_forward()` function (generic)
-  - Works with any architecture using generic layer interface
-  - **Blocked by:** FASE 2.5 kernels (MatMul FP32, Causal Mask, Add, Mul)
+- ✅ **FASE 3.3: Forward Pass** (`src/models/llama3.c`) - **COMPLETE** (2025-01-02)
+  - ✅ `llama_forward()` function implemented
+  - ✅ Complete forward pass: Token embeddings → Layers → Final RMSNorm → LM Head
+  - ✅ Attention forward pass with GQA support
+  - ✅ MLP forward pass (SwiGLU)
+  - ✅ KV cache management
+  - ✅ RoPE positional encoding
+  - ✅ Causal masking
+  - ✅ All kernels integrated (MatMul FP32, Causal Mask, Add, Mul)
+  - ✅ Tests: 14 tests, 100% pass rate
 
 - ⏳ **GQA Support**
   - Grouped Query Attention implementation
   - KV cache management for multiple heads
 
-### FASE 4: Tokenizer & Main Loop (Not Started)
-- ⏳ **BPE Tokenizer** (`src/tokenizer/bpe.c`)
-  - Load tokenizer from binary format
-  - Encode text → tokens
-  - Decode tokens → text
+### ✅ FASE 4: Tokenizer & Main Loop (Partially Complete)
+
+- ✅ **BPE Tokenizer** (`src/tokenizer/bpe.c`) - **COMPLETE** (2025-01-02)
+  - ✅ Load tokenizer from binary format (`q_tokenizer_load`)
+  - ✅ Encode text → tokens (`q_tokenizer_encode`)
+  - ✅ Decode tokens → text (`q_tokenizer_decode`)
+  - ✅ Free tokenizer resources (`q_tokenizer_free`)
+  - ✅ Binary format: Header (32 bytes) + Vocab + BPE Merges
+  - ✅ Vocab: 256 base tokens (bytes 0-255) + 3 special tokens (BOS, EOS, PAD)
+  - ✅ Export function: `tools/convert_llama.py --tokenizer tokenizer.bin`
+  - ✅ Tests: `tests/test_tokenizer.c` (all passing)
+  - ✅ Example: `examples/hello_world.c` (working)
+  - ✅ Validation: Release + Debug with sanitizers
 
 - ⏳ **Main Application** (`src/main.c`)
   - Command-line interface

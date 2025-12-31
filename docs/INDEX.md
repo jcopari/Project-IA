@@ -1,7 +1,7 @@
 # QORUS-IA v3.0: DOCUMENTATION INDEX
 # Master Index - Where to Find Everything
 
-**Last Updated:** 2025-12-31  
+**Last Updated:** 2025-01-02  
 **Purpose:** Navigation guide for all Qorus-IA documentation
 
 ---
@@ -28,6 +28,7 @@
 - **Infrastructure:** `docs/STATUS.md#completed` - FASE 1, 2, 3.2 complete
 - **Kernels:** `docs/STATUS.md#fase-2` - 6/6 core kernels implemented
 - **Model Building:** `docs/STATUS.md#fase-3` - Model graph building complete
+- **Tokenizer:** `docs/TOKENIZER_IMPLEMENTATION.md` - FASE 4.1 complete (BPE tokenizer implemented)
 
 ### What's Next
 - **Next Phase:** `docs/STATUS.md#next-steps` - FASE 2.5, 3.3, 5.0
@@ -75,6 +76,11 @@
 - **Generic Framework Plan:** `docs/GENERIC_FRAMEWORK_PLAN.md` - Complete plan (MFR + CoT + Proof + TDD)
 - **Layer Interface:** `MASTER_BLUEPRINT.md#generic-layer-interface` - Layer abstraction design
 - **Model Container:** `MASTER_BLUEPRINT.md#generic-model-container` - Model container design
+
+### Tokenizer Implementation
+- **Tokenizer Implementation:** `docs/TOKENIZER_IMPLEMENTATION.md` - Complete BPE tokenizer documentation
+- **API Reference:** `include/qorus.h#tokenizer-api` - Public API functions
+- **Example:** `examples/hello_world.c` - Working example
 
 ---
 
@@ -150,6 +156,9 @@
 
 ### Implementation Documents
 - `docs/KERNEL_IMPLEMENTATION_DETAILS.md` - Kernel implementation
+- `docs/TOKENIZER_IMPLEMENTATION.md` - Tokenizer implementation (FASE 4.1)
+- `docs/FASE_3.3_COMPLETION_PLAN.md` - Forward pass completion plan (FASE 3.3)
+- `docs/FASE_3.3_ANALYSIS.md` - Forward pass analysis
 - `docs/STATUS.md` - Current status
 - `docs/QUICK_REFERENCE.md` - Quick reference
 - `docs/PLANNING_SUMMARY.md` - Planning summary
@@ -178,6 +187,7 @@
 - **Project overview?** → `README.md`
 - **Current status?** → `docs/STATUS.md` or `docs/QUICK_REFERENCE.md`
 - **Architecture details?** → `MASTER_BLUEPRINT.md`
+- **Tokenizer info?** → `docs/TOKENIZER_IMPLEMENTATION.md`
 - **Implementation plan?** → `docs/GENERIC_FRAMEWORK_PLAN.md` or `docs/KERNEL_PORTATION_PLAN.md`
 - **Timeline?** → `docs/TIMELINE.md`
 - **Vision?** → `docs/PROJECT_VISION.md`

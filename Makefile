@@ -50,7 +50,7 @@ BENCHMARK_TARGET = tools/benchmark
 TEST_SRCS = $(wildcard $(TESTS_DIR)/*.c)
 TEST_TARGETS = $(TEST_SRCS:$(TESTS_DIR)/%.c=$(BUILD_DIR)/tests/%)
 
-.PHONY: all clean directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration benchmark
+.PHONY: all clean directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial benchmark
 
 all: directories $(TARGET)
 
@@ -178,7 +178,25 @@ test-ops-integration: directories $(BUILD_DIR)/tests/test_ops_integration
 	@echo "Executando testes de integração de operações matemáticas..."
 	@$(BUILD_DIR)/tests/test_ops_integration
 
-test-adversarial-all: test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-matmul-adversarial
+test-tokenizer: directories $(BUILD_DIR)/tests/test_tokenizer
+	@echo "Gerando tokenizer..."
+	@python3 tools/convert_llama.py --tokenizer tokenizer.bin || true
+	@echo "Executando teste de tokenizer..."
+	@$(BUILD_DIR)/tests/test_tokenizer tokenizer.bin
+
+test-llama-forward-adversarial: directories $(BUILD_DIR)/tests/test_llama_forward_adversarial
+	@echo "Gerando modelo dummy..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@echo "Executando testes adversarial de llama_forward..."
+	@$(BUILD_DIR)/tests/test_llama_forward_adversarial
+
+test-tokenizer-adversarial: directories $(BUILD_DIR)/tests/test_tokenizer_adversarial
+	@echo "Gerando tokenizer..."
+	@python3 tools/convert_llama.py --tokenizer tokenizer.bin || true
+	@echo "Executando testes adversarial de tokenizer..."
+	@$(BUILD_DIR)/tests/test_tokenizer_adversarial
+
+test-adversarial-all: test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-matmul-adversarial test-llama-forward-adversarial test-tokenizer-adversarial
 	@echo "✓ Todos os testes adversarial concluídos"
 
 test-integration-all: test-ops-integration
@@ -213,4 +231,4 @@ benchmark: directories $(BENCHMARK_TARGET)
 	@$(BENCHMARK_TARGET)
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) $(BENCHMARK_TARGET) model_dummy.qorus
+	rm -rf $(BUILD_DIR) $(TARGET) $(BENCHMARK_TARGET) model_dummy.qorus tokenizer.bin

@@ -30,7 +30,7 @@ static bool float_array_eq(const float* a, const float* b, size_t n, float abs_t
 }
 
 // Helper: Initialize KV cache with zeros
-static void init_kv_cache(q_context* ctx, const llama_config* config) {
+static void init_kv_cache(q_context* ctx, const q_llama_config* config) {
     if (ctx->kv_buffer == NULL) {
         return;
     }
@@ -49,7 +49,7 @@ int main(void) {
     printf("=== TDD Test: llama_forward() ===\n\n");
     
     q_context ctx = {0};
-    llama_model model = {0};
+    q_llama_model model = {0};
     q_error_code ret;
     
     // Test 1: Load model file
