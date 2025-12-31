@@ -1,0 +1,307 @@
+#include "qorus.h"
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <stdint.h>
+#include <limits.h>
+
+// Definições de compatibilidade multiplataforma
+#ifndef MAP_POPULATE
+#define MAP_POPULATE 0
+#endif
+
+#ifdef __APPLE__
+#include <sys/mman.h>
+#define madvise(addr, len, advice) posix_madvise(addr, len, advice)
+#ifndef MADV_SEQUENTIAL
+#define MADV_SEQUENTIAL 0
+#endif
+#ifndef MADV_WILLNEED
+#define MADV_WILLNEED 0
+#endif
+#endif
+
+#ifdef DEBUG
+#define Q_ARENA_POISON_PATTERN 0xDEADBEEF
+#define Q_ARENA_POISON_SIZE (64 * 1024)
+#endif
+
+// Validação de alinhamento de ponteiro (zero overhead em release)
+static inline bool q_is_aligned(const void* ptr) {
+    return ((uintptr_t)ptr % Q_ALIGN) == 0;
+}
+
+// Helper: Safe alignment calculation with overflow check
+// Returns 0 on overflow, aligned size otherwise
+// Time Complexity: O(1)
+static inline size_t safe_align_size(size_t size) {
+    // Check: Can we add (Q_ALIGN - 1) without overflow?
+    if (__builtin_expect(size > SIZE_MAX - (Q_ALIGN - 1), 0)) {
+        return 0;  // Overflow
+    }
+    return ((size + Q_ALIGN - 1) & ~(Q_ALIGN - 1));
+}
+
+// Inicializar memória (Tier 1: Mmap)
+q_error_code q_init_memory(q_context* restrict ctx, const char* model_path) {
+    int fd = open(model_path, O_RDONLY);
+    if (fd < 0) {
+        return Q_ERR_FILE_OPEN;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        close(fd);
+        return Q_ERR_FILE_STAT;
+    }
+    size_t file_size = st.st_size;
+
+    if (file_size < Q_HEADER_SIZE) {
+        close(fd);
+        return Q_ERR_FILE_TOO_SMALL;
+    }
+
+    // Mmap com flags seguras para portabilidade
+    int flags = MAP_PRIVATE;
+    #ifdef __linux__
+    flags |= MAP_POPULATE;  // Apenas Linux pré-carrega páginas
+    #endif
+
+    void* mmap_ptr = mmap(NULL, file_size, PROT_READ, flags, fd, 0);
+    close(fd);
+
+    if (mmap_ptr == MAP_FAILED) {
+        return Q_ERR_MMAP_FAILED;
+    }
+
+    // Hints de performance (com fallback silencioso)
+    #if defined(__linux__) || defined(__FreeBSD__)
+    // Linux e FreeBSD suportam madvise completo
+    madvise(mmap_ptr, file_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+    #elif defined(__APPLE__)
+    // macOS: usar posix_madvise (já mapeado acima)
+    posix_madvise(mmap_ptr, file_size, POSIX_MADV_SEQUENTIAL);
+    posix_madvise(mmap_ptr, file_size, POSIX_MADV_WILLNEED);
+    #else
+    // Outros sistemas: ignorar silenciosamente
+    (void)mmap_ptr; (void)file_size;
+    #endif
+
+    q_model_header* header = (q_model_header*)mmap_ptr;
+    if (header->magic != Q_MAGIC) {
+        munmap(mmap_ptr, file_size);
+        return Q_ERR_INVALID_MAGIC;
+    }
+
+    Q_ASSERT_ALIGNED(header);
+
+    ctx->weights_mmap = mmap_ptr;
+    ctx->weights_size = file_size;
+    ctx->header = header;
+
+    return Q_OK;
+}
+
+// Alocar KV Cache (Tier 2: Persistent)
+q_error_code q_alloc_kv_cache(q_context* restrict ctx, size_t kv_size) {
+    Q_VALIDATE_PTR_OR_RETURN(ctx, Q_ERR_INVALID_ARG);
+    
+    // Prevent Memory Leak: Check if already allocated
+    if (ctx->kv_buffer != NULL) {
+        return Q_ERR_INVALID_ARG;
+    }
+
+    // Security: Safe alignment with overflow check
+    size_t aligned_size = safe_align_size(kv_size);
+    if (aligned_size == 0) {
+        return Q_ERR_OVERFLOW;
+    }
+    
+    void* kv_buf = aligned_alloc(Q_ALIGN, aligned_size);
+    if (!kv_buf) {
+        return Q_ERR_ALLOC_FAILED;
+    }
+
+    // Zero-initialize (Security best practice)
+    memset(kv_buf, 0, aligned_size);
+
+    ctx->kv_buffer = kv_buf;
+    ctx->kv_size = aligned_size;
+
+    Q_ASSERT_ALIGNED(kv_buf);
+    return Q_OK;
+}
+
+// Alocar Arena (Tier 3: Transient)
+q_error_code q_alloc_arena(q_context* restrict ctx, size_t arena_size) {
+    Q_VALIDATE_PTR_OR_RETURN(ctx, Q_ERR_INVALID_ARG);
+    
+    // Prevent Memory Leak
+    if (ctx->scratch_buffer != NULL) {
+        return Q_ERR_INVALID_ARG;
+    }
+    
+    // Security: Safe alignment with overflow check
+    size_t aligned_size = safe_align_size(arena_size);
+    if (aligned_size == 0) {
+        return Q_ERR_OVERFLOW;
+    }
+    
+    void* arena_buf = aligned_alloc(Q_ALIGN, aligned_size);
+    if (!arena_buf) {
+        return Q_ERR_ALLOC_FAILED;
+    }
+
+    ctx->scratch_buffer = arena_buf;
+    ctx->scratch_size = aligned_size;
+    ctx->scratch_head = 0;  // Inicialmente alinhado
+
+    Q_ASSERT_ALIGNED(arena_buf);
+    return Q_OK;
+}
+
+// Arena alloc (otimizado: branchless, zero overhead no caminho feliz)
+// CRITICAL: Must call q_alloc_arena() before using this function
+void* q_arena_alloc(q_context* restrict ctx, size_t size) {
+    // Security: Validate context pointer (always active)
+    if (__builtin_expect(ctx == NULL, 0)) {
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_arena_alloc: ctx is NULL at %s:%d\n", __FILE__, __LINE__);
+        abort();
+        #else
+        return NULL;
+        #endif
+    }
+    
+    // Security: Validate arena is initialized (always active)
+    if (__builtin_expect(ctx->scratch_buffer == NULL, 0)) {
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_arena_alloc: arena not initialized (call q_alloc_arena first)\n");
+        abort();
+        #else
+        return NULL;
+        #endif
+    }
+    
+    // Security: Validate alignment invariant (ALWAYS ACTIVE - critical for AVX2)
+    // This check cannot be DEBUG-only because misalignment causes crashes in Release
+    if (__builtin_expect(!q_is_aligned((uint8_t*)ctx->scratch_buffer + ctx->scratch_head), 0)) {
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: Arena head desalinhado! head=%zu at %s:%d\n", 
+                ctx->scratch_head, __FILE__, __LINE__);
+        abort();
+        #else
+        // In Release, return NULL to prevent crash (caller should handle)
+        return NULL;
+        #endif
+    }
+
+    // Security: Safe alignment with overflow check
+    size_t aligned_size = safe_align_size(size);
+    if (aligned_size == 0) {
+        return NULL;  // Overflow in alignment
+    }
+
+    // Security: Check for overflow in addition (head + size)
+    if (__builtin_expect(ctx->scratch_head > SIZE_MAX - aligned_size, 0)) {
+        return NULL;  // Overflow in addition
+    }
+
+    size_t new_head = ctx->scratch_head + aligned_size;
+    
+    // Bounds check
+    if (__builtin_expect(new_head > ctx->scratch_size, 0)) {
+        return NULL;  // OOM
+    }
+
+    // Return pointer and update head
+    void* ptr = (uint8_t*)ctx->scratch_buffer + ctx->scratch_head;
+    ctx->scratch_head = new_head;
+
+    Q_ASSERT_ALIGNED(ptr);
+    return ptr;
+}
+
+// Reset arena (com poisoning seguro e otimizado)
+void q_arena_reset(q_context* restrict ctx) {
+    // Security: Validate context pointer
+    if (__builtin_expect(ctx == NULL, 0)) {
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_arena_reset: ctx is NULL at %s:%d\n", __FILE__, __LINE__);
+        abort();
+        #endif
+        return;
+    }
+    
+    #ifdef DEBUG
+    // Early return if arena not initialized
+    if (ctx->scratch_buffer == NULL) {
+        ctx->scratch_head = 0;
+        return;
+    }
+    
+    // Calculate poison_size safely
+    size_t poison_size = ctx->scratch_head;
+    if (poison_size > Q_ARENA_POISON_SIZE) {
+        poison_size = Q_ARENA_POISON_SIZE;
+    }
+    if (poison_size > ctx->scratch_size) {
+        poison_size = ctx->scratch_size;
+    }
+
+    // Use memset for safety and performance
+    if (poison_size > 0) {
+        memset(ctx->scratch_buffer, 0xDE, poison_size);
+    }
+    
+    if (ctx->scratch_head > Q_ARENA_POISON_SIZE) {
+        fprintf(stderr, "WARNING: Arena reset com %zu bytes usados (possível vazamento?)\n", 
+                ctx->scratch_head);
+    }
+    #endif
+    
+    ctx->scratch_head = 0;
+}
+
+void q_free_memory(q_context* restrict ctx) {
+    // Security: Validate context pointer
+    if (__builtin_expect(ctx == NULL, 0)) {
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_free_memory: ctx is NULL at %s:%d\n", __FILE__, __LINE__);
+        abort();
+        #endif
+        return;
+    }
+    
+    // Free in LIFO order (Last In, First Out)
+    // Typical allocation order: q_init_memory() → q_alloc_kv_cache() → q_alloc_arena()
+    // Therefore free order: arena → kv_cache → mmap
+    
+    // 1. Free arena (allocated last)
+    if (ctx->scratch_buffer) {
+        free(ctx->scratch_buffer);
+        ctx->scratch_buffer = NULL;
+        ctx->scratch_size = 0;
+        ctx->scratch_head = 0;
+    }
+    
+    // 2. Free KV cache (allocated second)
+    if (ctx->kv_buffer) {
+        free(ctx->kv_buffer);
+        ctx->kv_buffer = NULL;
+        ctx->kv_size = 0;
+    }
+    
+    // 3. Free mmap (allocated first)
+    if (ctx->weights_mmap) {
+        munmap(ctx->weights_mmap, ctx->weights_size);
+        ctx->weights_mmap = NULL;
+        ctx->weights_size = 0;
+        // Security: Clear header pointer (it points into the unmapped memory)
+        ctx->header = NULL;
+    }
+}

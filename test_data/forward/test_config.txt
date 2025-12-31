@@ -1,0 +1,36 @@
+Forward Pass Test Configuration
+==================================================
+
+test1:
+  vocab_size: 32000
+  dim: 4096
+  n_layers: 2
+  n_heads: 32
+  n_kv_heads: 8
+  hidden_dim: 11008
+  max_seq_len: 8192
+  rope_theta: 500000.0
+
+test2:
+  vocab_size: 32000
+  dim: 4096
+  n_layers: 2
+  n_heads: 32
+  n_kv_heads: 8
+  hidden_dim: 11008
+  max_seq_len: 8192
+  rope_theta: 500000.0
+
+test3:
+  vocab_size: 32000
+  dim: 4096
+  n_layers: 2
+  n_heads: 32
+  n_kv_heads: 8
+  hidden_dim: 11008
+  max_seq_len: 8192
+  rope_theta: 500000.0
+
+Tolerances:
+  EPSILON_ABS: 0.0001
+  EPSILON_REL: 0.001
