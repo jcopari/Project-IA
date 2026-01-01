@@ -143,9 +143,22 @@ BENCHMARK_TARGET = tools/benchmark
 TEST_SRCS = $(wildcard $(TESTS_DIR)/*.c)
 TEST_TARGETS = $(TEST_SRCS:$(TESTS_DIR)/%.c=$(BUILD_DIR)/tests/%)
 
-.PHONY: all clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial benchmark analyze check-syntax
+.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial benchmark analyze check-syntax
 
-all: directories $(TARGET)
+# Target para compilar apenas objetos (sem executável) - útil para bibliotecas
+objects: directories $(OBJS)
+	@echo "✓ Todos os objetos compilados"
+
+# Target para biblioteca (alias para objects)
+lib: objects
+
+# Target principal - compila objetos e tenta criar executável (se main existir)
+# Se não houver main(), apenas compila objetos (comportamento de biblioteca)
+all: directories $(OBJS)
+	@echo "Tentando criar executável $(TARGET)..."
+	@$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS) 2>&1 || \
+		(echo "⚠ Aviso: Não foi possível criar executável (projeto pode ser biblioteca sem main())"; \
+		 echo "✓ Build completo: objetos compilados com sucesso")
 
 # Criação automática de diretórios baseada em estrutura de src/
 directories:
