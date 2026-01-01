@@ -240,7 +240,11 @@ static void test_aliasing_x_output(void) {
     float x_orig[8];
     memcpy(x_orig, x, sizeof(x));
     
+    // Test aliasing intentionally (adversarial test)
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wrestrict"
     q_error_code ret = q_rmsnorm_f32_avx2(x, weight, x, 8, 1e-6f);
+    #pragma GCC diagnostic pop
     
     // Check if function handles aliasing correctly (should work or return error)
     if (ret == Q_OK) {
@@ -535,7 +539,10 @@ static void test_zero_epsilon(void) {
         if (ret == Q_OK) {
             bool all_zero = true;
             for (uint32_t i = 0; i < 8; i++) {
+                #pragma GCC diagnostic push
+                #pragma GCC diagnostic ignored "-Wfloat-equal"
                 if (output[i] != 0.0f && !isnan(output[i]) && !isinf(output[i])) {
+                #pragma GCC diagnostic pop
                     all_zero = false;
                     break;
                 }

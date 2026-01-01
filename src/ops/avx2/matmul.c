@@ -116,12 +116,9 @@ q_error_code q_gemv_q4_f32_avx2(
     
     #ifdef DEBUG
     // DEBUG: Print dimensions for diagnosis
-    // CRITICAL FIX: Use static buffer to avoid stack allocation in hot path
-    // This prevents stack overflow in -O0 mode (required for static analysis)
-    static char debug_msg[256];
-    int debug_len = snprintf(debug_msg, sizeof(debug_msg),
-        "DEBUG: q_gemv_q4_f32_avx2: M=%u, N=%u, N%%32=%u\n", M, N, N % 32);
-    write(2, debug_msg, (size_t)debug_len);
+    // Use fprintf directly to avoid thread-safety issues with static buffers
+    // 256 bytes on stack is negligible (default stack is 8MB)
+    fprintf(stderr, "DEBUG: q_gemv_q4_f32_avx2: M=%u, N=%u, N%%32=%u\n", M, N, N % 32);
     #endif
     
     // Security: Dimension validations (always active)
@@ -162,13 +159,10 @@ q_error_code q_gemv_q4_f32_avx2(
     
     #ifdef DEBUG
     // DEBUG: Print overflow validation info
-    // CRITICAL FIX: Use static buffer to avoid stack allocation in hot path
-    // This prevents stack overflow in -O0 mode (required for static analysis)
-    static char overflow_debug[256];
-    int overflow_debug_len = snprintf(overflow_debug, sizeof(overflow_debug),
-        "DEBUG: q_gemv_q4_f32_avx2: Overflow check: M=%u, blocks_per_row=%u, M*blocks_per_row=%llu\n",
+    // Use fprintf directly to avoid thread-safety issues with static buffers
+    // 256 bytes on stack is negligible (default stack is 8MB)
+    fprintf(stderr, "DEBUG: q_gemv_q4_f32_avx2: Overflow check: M=%u, blocks_per_row=%u, M*blocks_per_row=%llu\n",
         M, blocks_per_row, (unsigned long long)M * (unsigned long long)blocks_per_row);
-    write(2, overflow_debug, (size_t)overflow_debug_len);
     #endif
     
     // CRITICAL: Check for overflow in M * blocks_per_row
