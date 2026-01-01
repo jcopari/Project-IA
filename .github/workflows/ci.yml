@@ -114,7 +114,7 @@ jobs:
     - name: Instalar Dependências de Build
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential
+        sudo apt-get install -y build-essential cppcheck clang-tidy bear
 
     - name: Verificar Versão do GCC
       run: |
@@ -123,14 +123,50 @@ jobs:
         if [ "$GCC_VERSION" -lt 10 ]; then
           echo "Aviso: GCC < 10, análise estática limitada"
         fi
+        echo "✓ GCC versão: $GCC_VERSION"
+        cppcheck --version || echo "⚠ cppcheck não disponível"
+        clang-tidy --version || echo "⚠ clang-tidy não disponível"
+        bear --version || echo "⚠ bear não disponível"
 
-    - name: Executar Análise Estática (se GCC >= 10)
+    - name: Análise Estática - GCC Analyzer (Primário)
       run: |
         GCC_VERSION=$(gcc -dumpversion | cut -d. -f1)
         if [ "$GCC_VERSION" -ge 10 ]; then
-          make analyze || echo "Análise estática encontrou problemas (verificar static-analysis.log)"
+          echo "Executando GCC analyzer (análise estática primária)..."
+          make analyze || echo "⚠ GCC analyzer encontrou problemas (verificar static-analysis.log)"
         else
-          echo "Pulando análise estática (requer GCC >= 10)"
+          echo "⚠ Pulando GCC analyzer (requer GCC >= 10)"
+        fi
+
+    - name: Análise Estática - cppcheck (Complementar)
+      run: |
+        echo "Executando cppcheck (análise estática complementar)..."
+        cppcheck --enable=all --inconclusive --error-exitcode=0 \
+          --suppress=missingIncludeSystem \
+          --suppress=unmatchedSuppression \
+          --suppress=unusedFunction \
+          src/ tests/ 2>&1 | tee cppcheck-report.log || true
+        echo "✓ cppcheck concluído (ver cppcheck-report.log)"
+        # Mostra resumo dos problemas encontrados
+        if [ -f cppcheck-report.log ]; then
+          echo "Resumo cppcheck:"
+          grep -E "(error|warning)" cppcheck-report.log | head -20 || echo "  Nenhum problema crítico encontrado"
+        fi
+
+    - name: Análise Estática - clang-tidy (Terceira Camada)
+      run: |
+        echo "Executando clang-tidy (análise estática terceira camada)..."
+        make analyze-clang-tidy || echo "⚠ clang-tidy encontrou problemas (ver clang-tidy-report.log)"
+        echo "✓ clang-tidy concluído (ver clang-tidy-report.log)"
+        # Verifica se warnings válidos foram corrigidos
+        if [ -f clang-tidy-report.log ]; then
+          echo "Resumo clang-tidy:"
+          echo "  Warnings críticos (bugprone-implicit-widening, bugprone-multi-level, cert-err33-c):"
+          grep -E "(bugprone-implicit-widening|bugprone-multi-level-implicit-pointer-conversion|cert-err33-c)" clang-tidy-report.log | head -10 || echo "    ✓ Nenhum warning crítico encontrado (correções aplicadas)"
+          echo "  Total de warnings:"
+          grep -c "warning:" clang-tidy-report.log || echo "    0"
+          echo "  Warnings restantes (principalmente estilo e falsos positivos):"
+          grep "warning:" clang-tidy-report.log | grep -v "bugprone-implicit-widening\|bugprone-multi-level\|cert-err33-c" | head -5 || echo "    Nenhum warning relevante"
         fi
 
     - name: Limpeza Pós-Análise (Organização)
@@ -138,5 +174,8 @@ jobs:
         echo "Limpando arquivos temporários após análise..."
         find build -name "*.o" -type f -delete 2>/dev/null || true
         find build -name "*.d" -type f -delete 2>/dev/null || true
-        rm -f model_dummy.qorus tokenizer.bin static-analysis.log 2>/dev/null || true
+        rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+        # Mantém logs de análise para inspeção
+        echo "Arquivos de análise mantidos:"
+        ls -lh static-analysis.log cppcheck-report.log clang-tidy-report.log compile_commands.json 2>/dev/null || echo "  Nenhum log de análise encontrado"
         echo "✓ Limpeza concluída"

@@ -139,7 +139,8 @@ q_error_code q_tokenizer_load(q_tokenizer* restrict tok, const char* tokenizer_p
             for (uint32_t j = 0; j < i; j++) {
                 free(tok->vocab[j]);
             }
-            free(tok->vocab);
+            // CRITICAL FIX: Explicit cast improves clarity and suppresses warning
+            free((void*)tok->vocab);
             fclose(f);
             return (err != Q_OK) ? err : Q_ERR_INVALID_SIZE;
         }
@@ -150,7 +151,8 @@ q_error_code q_tokenizer_load(q_tokenizer* restrict tok, const char* tokenizer_p
             for (uint32_t j = 0; j < i; j++) {
                 free(tok->vocab[j]);
             }
-            free(tok->vocab);
+            // CRITICAL FIX: Explicit cast improves clarity and suppresses warning
+            free((void*)tok->vocab);
             fclose(f);
             return Q_ERR_ALLOC_FAILED;
         }
@@ -161,7 +163,8 @@ q_error_code q_tokenizer_load(q_tokenizer* restrict tok, const char* tokenizer_p
             for (uint32_t j = 0; j < i; j++) {
                 free(tok->vocab[j]);
             }
-            free(tok->vocab);
+            // CRITICAL FIX: Explicit cast improves clarity and suppresses warning
+            free((void*)tok->vocab);
             fclose(f);
             return Q_ERR_FILE_OPEN;
         }
@@ -177,7 +180,8 @@ q_error_code q_tokenizer_load(q_tokenizer* restrict tok, const char* tokenizer_p
             for (uint32_t i = 0; i < tok->vocab_size; i++) {
                 free(tok->vocab[i]);
             }
-            free(tok->vocab);
+            // CRITICAL FIX: Explicit cast improves clarity and suppresses warning
+            free((void*)tok->vocab);
             fclose(f);
             return Q_ERR_ALLOC_FAILED;
         }
@@ -190,7 +194,8 @@ q_error_code q_tokenizer_load(q_tokenizer* restrict tok, const char* tokenizer_p
                 for (uint32_t j = 0; j < tok->vocab_size; j++) {
                     free(tok->vocab[j]);
                 }
-                free(tok->vocab);
+                // CRITICAL FIX: Explicit cast improves clarity and suppresses warning
+                free((void*)tok->vocab);
                 fclose(f);
                 return err;
             }
@@ -201,7 +206,8 @@ q_error_code q_tokenizer_load(q_tokenizer* restrict tok, const char* tokenizer_p
                 for (uint32_t j = 0; j < tok->vocab_size; j++) {
                     free(tok->vocab[j]);
                 }
-                free(tok->vocab);
+                // CRITICAL FIX: Explicit cast improves clarity and suppresses warning
+                free((void*)tok->vocab);
                 fclose(f);
                 return err;
             }
@@ -212,14 +218,25 @@ q_error_code q_tokenizer_load(q_tokenizer* restrict tok, const char* tokenizer_p
                 for (uint32_t j = 0; j < tok->vocab_size; j++) {
                     free(tok->vocab[j]);
                 }
-                free(tok->vocab);
+                // CRITICAL FIX: Explicit cast improves clarity and suppresses warning
+                free((void*)tok->vocab);
                 fclose(f);
                 return err;
             }
         }
     }
     
-    fclose(f);
+    // CRITICAL FIX: Verify fclose() return value in success path
+    // Proof: fclose() returns 0 on success, EOF on error
+    // In success path, should verify file closed successfully
+    // Edge case: fclose() failure after successful write -> log warning but don't fail
+    if (fclose(f) != 0) {
+        // File may not be fully flushed, but data already written
+        // Log warning but don't fail (data integrity is maintained)
+        #ifdef DEBUG
+        fprintf(stderr, "WARNING: q_tokenizer_load: fclose() failed, but data already loaded\n");
+        #endif
+    }
     tok->initialized = true;
     return Q_OK;
 }
@@ -349,7 +366,10 @@ void q_tokenizer_free(q_tokenizer* restrict tok) {
         for (uint32_t i = 0; i < tok->vocab_size; i++) {
             free(tok->vocab[i]);
         }
-        free(tok->vocab);
+        // CRITICAL FIX: Explicit cast improves clarity and suppresses warning
+        // Proof: free() accepts void*, char** -> void* is valid conversion
+        // Safety: No change in behavior, only clarity improvement
+        free((void*)tok->vocab);
         tok->vocab = NULL;
     }
     

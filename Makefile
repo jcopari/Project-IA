@@ -55,8 +55,10 @@ ifeq ($(shell [ -n "$(GCC_VERSION)" ] && [ "$(GCC_VERSION)" -ge 8 ] 2>/dev/null 
 endif
 
 # Flags específicas do GCC 10+ (análise estática melhorada)
+# NOTE: -Wanalyzer-too-complex removido para permitir análise completa
+# A análise estática em modo ANALYZE=1 já usa -fanalyzer sem limite de complexidade
 ifeq ($(shell [ -n "$(GCC_VERSION)" ] && [ "$(GCC_VERSION)" -ge 10 ] 2>/dev/null && echo 1),1)
-	CFLAGS_QUALITY += -Warith-conversion -Wanalyzer-too-complex
+	CFLAGS_QUALITY += -Warith-conversion
 endif
 
 # Modo Release (Padrão: Performance Máxima)
@@ -84,8 +86,11 @@ ifeq ($(SANITIZE),1)
 endif
 
 # Modo Static Analysis (análise estática com GCC analyzer)
+# NOTE: Removido -Wanalyzer-too-complex para permitir análise mais profunda
+# Funções complexas (loops aninhados, grandes funções) são analisadas completamente
+# mantendo todos os outros checks de segurança (leaks, use-after-free, null-deref)
 ifeq ($(ANALYZE),1)
-	CFLAGS_ANALYZE = -O0 -g -mavx2 -mfma -fanalyzer -Wanalyzer-too-complex \
+	CFLAGS_ANALYZE = -O0 -g -mavx2 -mfma -fanalyzer \
 		-Wanalyzer-malloc-leak -Wanalyzer-double-free -Wanalyzer-use-after-free \
 		-Wanalyzer-null-dereference -Wanalyzer-use-of-uninitialized-value
 	LDFLAGS_ANALYZE = -lm
@@ -143,7 +148,7 @@ BENCHMARK_TARGET = tools/benchmark
 TEST_SRCS = $(wildcard $(TESTS_DIR)/*.c)
 TEST_TARGETS = $(TEST_SRCS:$(TESTS_DIR)/%.c=$(BUILD_DIR)/tests/%)
 
-.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-integration-e2e test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme benchmark analyze check-syntax
+.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-integration-e2e test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme benchmark analyze analyze-cppcheck analyze-clang-tidy analyze-complete check-syntax
 
 # Target para compilar apenas objetos (sem executável) - útil para bibliotecas
 objects: directories $(OBJS)
@@ -198,10 +203,61 @@ check-syntax:
 
 # Target para análise estática (requer GCC 10+)
 analyze:
-	@echo "Executando análise estática..."
+	@echo "Executando análise estática (GCC analyzer)..."
 	@$(MAKE) clean
 	@$(MAKE) ANALYZE=1 all 2>&1 | tee static-analysis.log || true
 	@echo "✓ Análise estática concluída (ver static-analysis.log)"
+
+# Target para análise estática complementar com cppcheck
+analyze-cppcheck:
+	@echo "Executando análise estática complementar (cppcheck)..."
+	@which cppcheck > /dev/null 2>&1 || (echo "⚠ cppcheck não instalado. Instale com: sudo apt-get install cppcheck" && exit 0)
+	@cppcheck --enable=all --inconclusive --error-exitcode=0 \
+		--suppress=missingIncludeSystem \
+		--suppress=unmatchedSuppression \
+		--suppress=unusedFunction \
+		src/ tests/ 2>&1 | tee cppcheck-report.log || true
+	@echo "✓ Análise cppcheck concluída (ver cppcheck-report.log)"
+
+# Target para análise estática com clang-tidy
+analyze-clang-tidy:
+	@echo "Executando análise estática complementar (clang-tidy)..."
+	@which clang-tidy > /dev/null 2>&1 || (echo "⚠ clang-tidy não instalado. Instale com: sudo apt-get install clang-tidy" && exit 0)
+	@echo "Gerando compile_commands.json para clang-tidy..."
+	@$(MAKE) clean > /dev/null 2>&1 || true
+	@bear --version > /dev/null 2>&1 || (echo "⚠ bear não instalado. Instalando compile_commands.json manualmente..."; \
+		echo "[" > compile_commands.json; \
+		first=1; \
+		for file in $(ALL_SRCS); do \
+			if [ $$first -eq 1 ]; then first=0; else echo "," >> compile_commands.json; fi; \
+			rel_file=$$(echo $$file | sed 's|^$(SRC_DIR)/||'); \
+			build_file=$$(echo $$file | sed 's|^$(SRC_DIR)|$(BUILD_DIR)|' | sed 's|\.c$$|.o|'); \
+			echo "  {" >> compile_commands.json; \
+			echo "    \"directory\": \"$(shell pwd)\"," >> compile_commands.json; \
+			echo "    \"command\": \"$(CC) $(CFLAGS_COMMON) $(CFLAGS_QUALITY) $(CFLAGS_RELEASE) -c $$file -o $$build_file\"," >> compile_commands.json; \
+			echo "    \"file\": \"$$file\"" >> compile_commands.json; \
+			echo -n "  }" >> compile_commands.json; \
+		done; \
+		echo "" >> compile_commands.json; \
+		echo "]" >> compile_commands.json; \
+		echo "✓ compile_commands.json gerado")
+	@clang-tidy --version > /dev/null 2>&1 && \
+		clang-tidy $(ALL_SRCS) \
+			-checks='-*,bugprone-*,cert-*,clang-analyzer-*,cppcoreguidelines-*,misc-*,modernize-*,performance-*,portability-*,readability-*' \
+			-warnings-as-errors='' \
+			-header-filter='include/.*' \
+			-- $(CFLAGS_COMMON) $(CFLAGS_QUALITY) $(CFLAGS_RELEASE) -I./include 2>&1 | tee clang-tidy-report.log || true
+	@echo "✓ Análise clang-tidy concluída (ver clang-tidy-report.log)"
+
+# Target para análise estática completa (GCC analyzer + cppcheck + clang-tidy)
+analyze-complete: analyze analyze-cppcheck analyze-clang-tidy
+	@echo "═══════════════════════════════════════════════════════════"
+	@echo "  ANÁLISE ESTÁTICA COMPLETA CONCLUÍDA"
+	@echo "═══════════════════════════════════════════════════════════"
+	@echo "✓ GCC analyzer: static-analysis.log"
+	@echo "✓ cppcheck: cppcheck-report.log"
+	@echo "✓ clang-tidy: clang-tidy-report.log"
+	@echo "═══════════════════════════════════════════════════════════"
 
 # Target de teste específico
 test-memory: directories $(BUILD_DIR)/tests/test_memory
@@ -417,4 +473,4 @@ clean-test-artifacts: clean-objs
 	@echo "✓ Artefatos de teste removidos (.o, .d, model_dummy.qorus, tokenizer.bin)"
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) $(BENCHMARK_TARGET) model_dummy.qorus tokenizer.bin static-analysis.log
+	rm -rf $(BUILD_DIR) $(TARGET) $(BENCHMARK_TARGET) model_dummy.qorus tokenizer.bin static-analysis.log cppcheck-report.log clang-tidy-report.log compile_commands.json

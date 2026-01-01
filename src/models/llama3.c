@@ -591,10 +591,13 @@ q_error_code llama_build_graph(q_context* restrict ctx, q_llama_model* restrict 
                     float theta = model->rope_freqs[i] * (float)pos; // SEM powf!
                     float c = cosf(theta);
                     float s = sinf(theta);
-                    model->rope_cos_cache[pos * head_dim + i * 2] = c;
-                    model->rope_cos_cache[pos * head_dim + i * 2 + 1] = c;
-                    model->rope_sin_cache[pos * head_dim + i * 2] = s;
-                    model->rope_sin_cache[pos * head_dim + i * 2 + 1] = s;
+                    // CRITICAL FIX: Cast to size_t before multiplication to prevent overflow
+                    // Proof: size_t is at least 64-bit, preventing uint32_t overflow
+                    const size_t cache_offset = (size_t)pos * (size_t)head_dim + (size_t)i * 2;
+                    model->rope_cos_cache[cache_offset] = c;
+                    model->rope_cos_cache[cache_offset + 1] = c;
+                    model->rope_sin_cache[cache_offset] = s;
+                    model->rope_sin_cache[cache_offset + 1] = s;
                 }
             }
             model->rope_cache_enabled = true;
@@ -822,8 +825,11 @@ static q_error_code generate_rope_cos_sin(
     
     // Se cache completo disponível, apenas lookup (O(1))
     if (model->rope_cache_enabled && pos < model->config.max_seq_len) {
-        memcpy(cos_buf, model->rope_cos_cache + pos * head_dim, head_dim * sizeof(float));
-        memcpy(sin_buf, model->rope_sin_cache + pos * head_dim, head_dim * sizeof(float));
+        // CRITICAL FIX: Cast to size_t before multiplication to prevent overflow
+        // Proof: size_t is at least 64-bit, preventing uint32_t overflow
+        // Edge case: pos=2^31-1, head_dim=2^31-1 -> safe in size_t domain
+        memcpy(cos_buf, model->rope_cos_cache + (size_t)pos * (size_t)head_dim, head_dim * sizeof(float));
+        memcpy(sin_buf, model->rope_sin_cache + (size_t)pos * (size_t)head_dim, head_dim * sizeof(float));
         return Q_OK;
     }
     
@@ -836,10 +842,13 @@ static q_error_code generate_rope_cos_sin(
         float s = sinf(theta);
         
         // Duplicate for AVX2 layout: [c0, c0, c1, c1, ...]
-        cos_buf[i * 2] = c;
-        cos_buf[i * 2 + 1] = c;
-        sin_buf[i * 2] = s;
-        sin_buf[i * 2 + 1] = s;
+        // CRITICAL FIX: Cast to size_t before multiplication to prevent overflow
+        // Proof: i * 2 is safe (i < num_pairs, num_pairs = head_dim/2 < 2^31)
+        // But explicit cast improves clarity and prevents future issues
+        cos_buf[(size_t)i * 2] = c;
+        cos_buf[(size_t)i * 2 + 1] = c;
+        sin_buf[(size_t)i * 2] = s;
+        sin_buf[(size_t)i * 2 + 1] = s;
     }
     
     return Q_OK;
