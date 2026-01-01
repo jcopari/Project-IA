@@ -143,7 +143,7 @@ BENCHMARK_TARGET = tools/benchmark
 TEST_SRCS = $(wildcard $(TESTS_DIR)/*.c)
 TEST_TARGETS = $(TEST_SRCS:$(TESTS_DIR)/%.c=$(BUILD_DIR)/tests/%)
 
-.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial benchmark analyze check-syntax
+.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-integration-e2e test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme benchmark analyze check-syntax
 
 # Target para compilar apenas objetos (sem executável) - útil para bibliotecas
 objects: directories $(OBJS)
@@ -208,7 +208,8 @@ test-memory: directories $(BUILD_DIR)/tests/test_memory
 	@echo "Gerando modelo dummy..."
 	@python3 tools/convert_llama.py model_dummy.qorus || true
 	@echo "Executando teste..."
-	@$(BUILD_DIR)/tests/test_memory
+	@$(BUILD_DIR)/tests/test_memory || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
 
 test-dequantize: directories $(BUILD_DIR)/tests/test_dequantize
 	@echo "Gerando dados de teste..."
@@ -308,21 +309,65 @@ test-tokenizer: directories $(BUILD_DIR)/tests/test_tokenizer
 	@echo "Gerando tokenizer..."
 	@python3 tools/convert_llama.py --tokenizer tokenizer.bin || true
 	@echo "Executando teste de tokenizer..."
-	@$(BUILD_DIR)/tests/test_tokenizer tokenizer.bin
+	@$(BUILD_DIR)/tests/test_tokenizer tokenizer.bin || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
 
 test-llama-forward-adversarial: directories $(BUILD_DIR)/tests/test_llama_forward_adversarial
 	@echo "Gerando modelo dummy..."
 	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
 	@echo "Executando testes adversarial de llama_forward..."
-	@$(BUILD_DIR)/tests/test_llama_forward_adversarial
+	@$(BUILD_DIR)/tests/test_llama_forward_adversarial || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
 
 test-tokenizer-adversarial: directories $(BUILD_DIR)/tests/test_tokenizer_adversarial
 	@echo "Gerando tokenizer..."
 	@python3 tools/convert_llama.py --tokenizer tokenizer.bin || true
 	@echo "Executando testes adversarial de tokenizer..."
-	@$(BUILD_DIR)/tests/test_tokenizer_adversarial
+	@$(BUILD_DIR)/tests/test_tokenizer_adversarial || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
 
-test-adversarial-all: test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-matmul-adversarial test-llama-forward-adversarial test-tokenizer-adversarial
+test-memory-strategies: directories $(BUILD_DIR)/tests/test_memory_strategies
+	@echo "Gerando modelo dummy..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@echo "Executando testes de estratégias de memória..."
+	@$(BUILD_DIR)/tests/test_memory_strategies || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-llama-cleanup: directories $(BUILD_DIR)/tests/test_llama_cleanup
+	@echo "Gerando modelo dummy..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@echo "Executando testes de limpeza do modelo..."
+	@$(BUILD_DIR)/tests/test_llama_cleanup || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-integration-e2e: directories $(BUILD_DIR)/tests/test_integration_e2e
+	@echo "Gerando modelo dummy e tokenizer..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@python3 tools/convert_llama.py --tokenizer tokenizer.bin || true
+	@echo "Executando testes end-to-end..."
+	@$(BUILD_DIR)/tests/test_integration_e2e || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-tokenizer-free-complete: directories $(BUILD_DIR)/tests/test_tokenizer_free_complete
+	@echo "Gerando tokenizer..."
+	@python3 tools/convert_llama.py --tokenizer tokenizer.bin || true
+	@echo "Executando validação completa de q_tokenizer_free..."
+	@$(BUILD_DIR)/tests/test_tokenizer_free_complete || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-model-file-validation: directories $(BUILD_DIR)/tests/test_model_file_validation
+	@echo "Executando testes de validação de arquivos de modelo..."
+	@$(BUILD_DIR)/tests/test_model_file_validation || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-edge-cases-extreme: directories $(BUILD_DIR)/tests/test_edge_cases_extreme
+	@echo "Gerando modelo dummy..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@echo "Executando testes de edge cases extremos..."
+	@$(BUILD_DIR)/tests/test_edge_cases_extreme || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-adversarial-all: test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-matmul-adversarial test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme
 	@echo "✓ Todos os testes adversarial concluídos"
 
 test-integration-all: test-ops-integration
