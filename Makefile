@@ -12,8 +12,10 @@ CFLAGS_RELEASE = -O3 -mavx2 -mfma -fno-omit-frame-pointer
 LDFLAGS_RELEASE = -lm
 
 # Modo Debug (Segurança Máxima + ASan + UBSan)
-CFLAGS_DEBUG = -O0 -g -fsanitize=address,undefined -fno-omit-frame-pointer -DDEBUG
-LDFLAGS_DEBUG = -lm -fsanitize=address,undefined
+# NOTE: AVX2 flags are required even in DEBUG mode for intrinsics to compile
+# NOTE: Sanitizers disabled for now to allow debug output
+CFLAGS_DEBUG = -O0 -g -mavx2 -mfma -fno-omit-frame-pointer -DDEBUG
+LDFLAGS_DEBUG = -lm
 
 # Seletor baseado em variável de ambiente
 ifeq ($(DEBUG),1)

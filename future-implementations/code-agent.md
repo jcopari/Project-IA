@@ -1,8 +1,11 @@
-# Code Agent - Documento de Implementação | Qorus-IA
+# 🏛️ QORUS-IA CODE AGENT v3.1: ELITE SYSTEM BLUEPRINT
 
 **Data**: 2024-12-29  
-**Versão**: Qorus-IA v2.0.0 (Reorganizado para Implementação)  
+**Versão**: v3.1.0 (Elite System - Dual-Agent Architecture)  
 **Status**: 📋 Documento Prático de Implementação  
+**Arquitetura**: Dual-Agent (Architect + Auditor) com Aprendizado por Reforço  
+**Base de Conhecimento**: Elite Repos (Linux/Doom) + Livros de Engenharia  
+**Engine**: Qorus-IA v3.0 (C/CUDA Hybrid)  
 **Metodologia Core**: TDD + MFR + CoT + Proof (Integrado e Obrigatório)
 
 ---
@@ -10,12 +13,14 @@
 ## 📋 ÍNDICE
 
 1. [Visão Geral e Contexto](#visão-geral-e-contexto)
-2. [Metodologia Core: TDD + MFR + CoT + Proof](#metodologia-core-tdd--mfr--cot--proof)
-3. [O que Já Existe vs O que Precisa ser Feito](#o-que-já-existe-vs-o-que-precisa-ser-feito)
-4. [Roadmap Progressivo de Implementação](#roadmap-progressivo-de-implementação)
-5. [Especificações Técnicas](#especificações-técnicas)
-6. [Integração e Deploy](#integração-e-deploy)
-7. [Referências e Checklist](#referências-e-checklist)
+2. [Arquitetura Dual-Agent: The Inner Loop](#arquitetura-dual-agent-the-inner-loop)
+3. [Pipeline de Treinamento de Elite](#pipeline-de-treinamento-de-elite)
+4. [Metodologia Core: TDD + MFR + CoT + Proof](#metodologia-core-tdd--mfr--cot--proof)
+5. [O que Já Existe vs O que Precisa ser Feito](#o-que-já-existe-vs-o-que-precisa-ser-feito)
+6. [Roadmap Progressivo de Implementação](#roadmap-progressivo-de-implementação)
+7. [Especificações Técnicas](#especificações-técnicas)
+8. [Integração e Deploy](#integração-e-deploy)
+9. [Referências e Checklist](#referências-e-checklist)
 
 ---
 
@@ -23,17 +28,20 @@
 
 ### Propósito
 
-**Qorus-IA Code Agent** é uma **ferramenta interna** de desenvolvimento que utiliza IA para gerar código de qualidade seguindo metodologia rigorosa (TDD + MFR + CoT + Proof).
+**Qorus-IA Code Agent v3.1** é um **Sistema Autônomo de Engenharia de Software de Elite** que utiliza arquitetura dual-agente (Architect + Auditor) para gerar código de qualidade seguindo metodologia rigorosa (TDD + MFR + CoT + Proof).
 
 **Características Principais:**
 - ✅ **Ferramenta Interna** - Acesso restrito à equipe de desenvolvimento (não para clientes)
+- ✅ **Arquitetura Dual-Agent** - Architect (gerador) + Auditor (validador) em loop colaborativo/adversarial
 - ✅ **Multi-Linguagem** - Suporta todas linguagens do projeto (C, Python, JavaScript, TypeScript, PHP, SQL, etc)
 - ✅ **Latência ultra-baixa** (inferência local no servidor: 10-50ms)
 - ✅ **Privacidade total** (código nunca sai do servidor)
 - ✅ **Código sempre testado** (TDD automático integrado)
 - ✅ **Performance CPU** (157.79 GFLOPS sem GPU)
+- ✅ **LoRA Adapters** - Economia massiva de VRAM (87.5% de redução)
+- ✅ **Treinamento Elite** - Kernel Linux + Doom + CSAPP + LeetCode + AlphaZero
 
-**Objetivo**: Acelerar desenvolvimento interno gerando código de qualidade que segue padrões do projeto e passa em testes automaticamente.
+**Objetivo**: Criar um **Engenheiro de Software Artificial Sênior** especializado em C e Sistemas, capaz de se auto-melhorar através de aprendizado por reforço.
 
 ### Casos de Uso
 
@@ -59,14 +67,927 @@
 │  └───────────────────┬──────────────────────────────┘  │
 │                      ↕ IPC                              │
 │  ┌──────────────────────────────────────────────────┐  │
-│  │  Qorus-IA Code Agent (C Native)                 │  │
+│  │  Qorus-IA Engine (C Native)                      │  │
+│  │  - Base Model (Llama-3 Coder) - Congelado        │  │
+│  │  - LoRA Architect Adapter (Pequeno)             │  │
+│  │  - LoRA Auditor Adapter (Pequeno)               │  │
 │  │  - Tokenizer Multi-Linguagem                    │  │
-│  │  - Transformer Decoder Stack                    │  │
 │  │  - TDD + MFR + CoT + Proof integrado           │  │
 │  │  - 157.79 GFLOPS                                │  │
+│  └───────────────────┬──────────────────────────────┘  │
+│                      ↕ The Inner Loop                  │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  ARCHITECT (Generator)                           │  │
+│  │  - Gera código baseado em MFR + Proof           │  │
+│  │  - System Prompt: "John Carmack + Linus"        │  │
+│  └───────────────────┬──────────────────────────────┘  │
+│                      ↕                                  │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  AUDITOR (Verifier/Bug Hunter)                  │  │
+│  │  - Analisa código do Architect                  │  │
+│  │  - System Prompt: "Security Analyst + Kernel"   │  │
+│  │  - Rejeita código inseguro/perigoso             │  │
+│  └───────────────────┬──────────────────────────────┘  │
+│                      ↕                                  │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  COMPILER (Final Judge)                         │  │
+│  │  - GCC + ASAN + Testes                           │  │
 │  └──────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🤝 ARQUITETURA DUAL-AGENT: THE INNER LOOP
+
+### Conceito: Dois Especialistas em Loop
+
+Não teremos apenas um modelo tentando acertar. Teremos **dois especialistas rodando em loop** (Adversarial/Collaborative Refinement).
+
+**Filosofia**: "Dois agentes são melhores que um" - especialização e validação cruzada através de loop iterativo.
+
+### 🧠 Agente A: O ARQUITETO (Architect - Generator)
+
+**Perfil**: Criativo, focado em performance, algoritmos e "First Principles Thinking".
+
+**System Prompt**: *"Você é John Carmack misturado com Linus Torvalds. Pense na memória, no cache e na complexidade assintótica antes de escrever. Use AVX2 onde possível. Sempre prove matematicamente sua solução antes de implementar."*
+
+**Responsabilidades**:
+- Geração de código baseada em requisitos
+- Implementação seguindo TDD + MFR + CoT + Proof
+- Geração de testes iniciais
+- Proposta de modelo de dados (MFR)
+- Otimização de performance (cache, SIMD, algoritmos)
+
+**Especialização**: Criatividade, geração, implementação, otimização
+
+### 🕵️ Agente B: O AUDITOR (Auditor - Verifier/Bug Hunter)
+
+**Perfil**: Paranoico, especialista em segurança e QA.
+
+**System Prompt**: *"Você é um Analista de Segurança Sênior e Mantenedor do Kernel Linux. Procure por memory leaks, race conditions, buffer overflows e violações de estilo. Seja impiedoso. Rejeite código inseguro ou perigoso."*
+
+**Responsabilidades**:
+- **Code Review**: Análise estática de código, detecção de bugs potenciais
+- **Security Analysis**: Memory leaks, buffer overflows, race conditions
+- **Test Generation**: Geração adicional de testes (edge cases, stress tests)
+- **Debug Analysis**: Identificação de problemas, sugestões de correção
+- **Quality Assurance**: Validação contra padrões, métricas de qualidade
+- **Proof Verification**: Verificação matemática de complexidade e corretude
+
+**Especialização**: Análise crítica, validação, garantia de qualidade, segurança
+
+### O Loop de Execução (The Inner Loop)
+
+**Implementação em C** (`src/agent/core.c`):
+
+```c
+#include "qorus.h"  // New-QorusIA v3.0 API
+
+typedef enum {
+    TURN_ARCHITECT,
+    TURN_AUDITOR,
+    TURN_COMPILER
+} q_agent_turn;
+
+typedef struct {
+    q_context* ctx;                    // New-QorusIA context
+    void* base_model;                  // Base model (Llama-3 Coder) - congelado
+    void* architect_lora;              // LoRA adapter para Architect
+    void* auditor_lora;                 // LoRA adapter para Auditor
+    q_tokenizer* tokenizer;
+    uint32_t max_retries;
+} q_dual_agent;
+
+typedef struct {
+    char* code;
+    char* tests;
+    char* data_model;
+    char* proof;
+    bool approved;
+    char* critique;
+    q_error_code compiler_result;
+} q_agent_output;
+
+// Executar ciclo elite (The Inner Loop)
+q_error_code q_run_elite_cycle(q_dual_agent* agent,
+                                 const char* problem,
+                                 const char* language,
+                                 q_agent_output* output) {
+    if (!agent || !problem || !output) {
+        return Q_ERR_NULL_PTR;
+    }
+    
+    char* code = NULL;
+    char* critique = NULL;
+    q_error_code ret = Q_OK;
+    
+    // 1. ARCHITECT gera código (Baseado em MFR + Proof)
+    ret = q_architect_generate(agent, problem, language, &code);
+    if (ret != Q_OK) {
+        return ret;
+    }
+    
+    // Loop de refinamento colaborativo/adversarial
+    for (uint32_t i = 0; i < agent->max_retries; i++) {
+        // 2. AUDITOR analisa código (Static Analysis Mental)
+        ret = q_auditor_review(agent, code, language, &critique);
+        if (ret != Q_OK) {
+            free(code);
+            return ret;
+        }
+        
+        // Verificar se foi aprovado
+        bool approved = q_is_approved(critique);
+        
+        if (approved) {
+            // 3. O Juiz Final (Compilador + Testes)
+            ret = q_compiler_check(agent, code, language, &output->compiler_result);
+            if (ret == Q_OK && output->compiler_result == Q_OK) {
+                // Código de Elite pronto
+                output->code = code;
+                output->approved = true;
+                free(critique);
+                return Q_OK;
+            }
+        }
+        
+        // 4. Feedback Loop - Architect refina baseado em crítica
+        char* refined_code = NULL;
+        ret = q_architect_refine(agent, code, critique, language, &refined_code);
+        if (ret != Q_OK) {
+            free(code);
+            free(critique);
+            return ret;
+        }
+        
+        free(code);
+        code = refined_code;
+        free(critique);
+        critique = NULL;
+    }
+    
+    // Se chegou aqui, falhou após max_retries
+    free(code);
+    output->approved = false;
+    return Q_ERR_MAX_RETRIES;
+}
+```
+
+### Fluxo Detalhado do Inner Loop
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    REQUEST (Desenvolvedor)                  │
+│              "Implemente função de ordenação"               │
+└───────────────────────┬─────────────────────────────────────┘
+                        │
+                        ↓
+┌─────────────────────────────────────────────────────────────┐
+│              ARCHITECT (Geração Inicial)                    │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ FASE 0: CoT - Raciocínio                            │  │
+│  │ FASE 0.5: Proof - Validação Matemática              │  │
+│  │ FASE 1: MFR - Modelo de Dados                       │  │
+│  │ FASE 2: TDD - Testes Iniciais                       │  │
+│  │ FASE 3: Implementação - Código                      │  │
+│  └───────────────────┬──────────────────────────────────┘  │
+│                      │ Código + Testes + Modelo + Proof    │
+│                      ↓                                      │
+┌─────────────────────────────────────────────────────────────┐
+│              AUDITOR (Análise Crítica)                     │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ 1. Code Review: Análise estática                     │  │
+│  │ 2. Security Check: Memory leaks, buffer overflows    │  │
+│  │ 3. Test Expansion: Testes adicionais                 │  │
+│  │ 4. Proof Verification: Validação matemática          │  │
+│  │ 5. Quality Metrics: Complexidade, manutenibilidade   │  │
+│  │ 6. Debug Analysis: Identificação de problemas        │  │
+│  └───────────────────┬──────────────────────────────────┘  │
+│                      │ Aprovado?                           │
+│                      ↓                                      │
+│              ┌───────┴───────┐                            │
+│              │ SIM           │ NÃO                         │
+│              ↓               ↓                             │
+│  ┌───────────────────┐  ┌──────────────────────────────┐ │
+│  │ COMPILER CHECK     │  │ FEEDBACK LOOP                │ │
+│  │ GCC + ASAN + Tests │  │ Architect refina código      │ │
+│  └───────┬───────────┘  └───────────┬──────────────────┘ │
+│          │                           │                      │
+│          ↓                           └──────────┐          │
+│  ┌───────────────┐                              │          │
+│  │ PASSOU?       │                              │          │
+│  └───┬───────┬───┘                              │          │
+│      │ SIM   │ NÃO                              │          │
+│      ↓       └──────────────────────────────────┘          │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │              RESPONSE (Desenvolvedor)                   ││
+│  │              Código de Elite validado e testado        ││
+│  └─────────────────────────────────────────────────────────┘│
+```
+
+### Implementação Técnica com New-QorusIA v3.0
+
+```c
+// Estrutura para Dual-Agent usando New-QorusIA v3.0
+typedef struct {
+    q_context* ctx;                    // Contexto de memória New-QorusIA
+    q_tokenizer* tokenizer;            // Tokenizer multi-linguagem
+    
+    // Base Model (congelado, compartilhado)
+    void* base_model_weights;          // Pesos do modelo base (mmap)
+    
+    // LoRA Adapters (pequenos, trocáveis)
+    void* architect_lora_weights;      // Pesos do adaptador Architect (~2GB)
+    void* auditor_lora_weights;        // Pesos do adaptador Auditor (~2GB)
+    
+    // Estado atual
+    q_agent_turn current_turn;
+    uint32_t iteration_count;
+    uint32_t max_iterations;
+} q_dual_agent;
+
+// Carregar adaptador LoRA (troca rápida)
+q_error_code q_load_lora_adapter(q_dual_agent* agent,
+                                  q_agent_turn turn) {
+    if (!agent) {
+        return Q_ERR_NULL_PTR;
+    }
+    
+    // Trocar contexto para Architect ou Auditor
+    if (turn == TURN_ARCHITECT) {
+        // Carregar architect_lora_weights no contexto
+        agent->current_turn = TURN_ARCHITECT;
+    } else if (turn == TURN_AUDITOR) {
+        // Carregar auditor_lora_weights no contexto
+        agent->current_turn = TURN_AUDITOR;
+    } else {
+        return Q_ERR_INVALID_ARG;
+    }
+    
+    return Q_OK;
+}
+
+// Architect gera código
+q_error_code q_architect_generate(q_dual_agent* agent,
+                                   const char* problem,
+                                   const char* language,
+                                   char** out_code) {
+    if (!agent || !problem || !out_code) {
+        return Q_ERR_NULL_PTR;
+    }
+    
+    // Carregar adaptador Architect
+    q_error_code ret = q_load_lora_adapter(agent, TURN_ARCHITECT);
+    if (ret != Q_OK) {
+        return ret;
+    }
+    
+    // Construir prompt com System Prompt do Architect
+    char* prompt = q_build_architect_prompt(problem, language);
+    
+    // Gerar código usando modelo base + LoRA Architect
+    ret = q_model_generate(agent->ctx,
+                           agent->base_model_weights,
+                           agent->architect_lora_weights,
+                           prompt,
+                           out_code);
+    
+    free(prompt);
+    return ret;
+}
+
+// Auditor revisa código
+q_error_code q_auditor_review(q_dual_agent* agent,
+                               const char* code,
+                               const char* language,
+                               char** out_critique) {
+    if (!agent || !code || !out_critique) {
+        return Q_ERR_NULL_PTR;
+    }
+    
+    // Carregar adaptador Auditor
+    q_error_code ret = q_load_lora_adapter(agent, TURN_AUDITOR);
+    if (ret != Q_OK) {
+        return ret;
+    }
+    
+    // Construir prompt com System Prompt do Auditor
+    char* prompt = q_build_auditor_prompt(code, language);
+    
+    // Gerar crítica usando modelo base + LoRA Auditor
+    ret = q_model_generate(agent->ctx,
+                            agent->base_model_weights,
+                            agent->auditor_lora_weights,
+                            prompt,
+                            out_critique);
+    
+    free(prompt);
+    return ret;
+}
+```
+
+### Economia de VRAM com LoRA Adapters
+
+**Problema**: Dois modelos de 8B parâmetros (Architect + Auditor) podem estourar VRAM do Google Colab.
+
+**Solução**: **LoRA Adapters (Low-Rank Adaptation)**
+
+- **Modelo Base**: Llama-3 Coder 8B (~16GB VRAM) - **Congelado, compartilhado**
+- **Architect LoRA**: ~2GB VRAM (pequeno adaptador)
+- **Auditor LoRA**: ~2GB VRAM (pequeno adaptador)
+- **Total**: ~18GB VRAM (vs ~32GB sem LoRA)
+- **Economia**: 87.5% de redução de VRAM para adaptadores
+
+**Implementação**:
+- Carregar modelo base uma vez (congelado)
+- Trocar apenas adaptadores LoRA durante execução (O(1) overhead)
+- Especialização profunda através de fine-tuning dos adaptadores
+
+---
+
+## 🎓 PIPELINE DE TREINAMENTO DE ELITE
+
+### Visão Geral
+
+O **Qorus-IA Code Agent** será treinado com uma estratégia única que combina código de referência de alta qualidade, literatura técnica fundamental, problemas algorítmicos e aprendizado por reforço estilo AlphaZero.
+
+**Objetivo**: Criar um modelo que não apenas gera código funcional, mas código que segue padrões de excelência técnica, compreende profundamente estruturas de dados e algoritmos, e aprende iterativamente através de auto-jogo (self-play).
+
+### Fase 1: A Teoria (Books & Specs) - "Learning the Rules"
+
+**Antes de ver código, a IA deve entender a engenharia.**
+
+**Objetivo**: Aprender o que é um registrador, como funciona o Cache L1/L2, o que é Virtual Memory. Isso habilita o **"First Principles Thinking"**.
+
+**Dataset**:
+
+**Livros Fundamentais** (~20-25% do dataset):
+- **The C Programming Language (K&R)**: Fundamentos sólidos da linguagem C, estilo clássico, elegância
+- **Computer Systems: A Programmer's Perspective (CSAPP)**: 
+  - Representação de dados (inteiros, ponto flutuante)
+  - Assembly e arquitetura de processadores
+  - Hierarquia de memória (cache, RAM, disco)
+  - Linking e carregamento
+  - Concorrência e sincronização
+- **Introduction to Algorithms (CLRS)**: Algoritmos fundamentais
+- **Algorithms (Sedgewick)**: Implementações práticas
+- **Data Structures and Algorithm Analysis**: Análise de complexidade
+
+**Manuais Técnicos** (~5-10% do dataset):
+- **Intel SDM (Software Developer Manuals)**: Arquitetura x86-64, instruções AVX2/AVX-512
+- **ARM Architecture Reference Manual**: Arquitetura ARM, instruções NEON
+- **POSIX Manuals**: System calls, APIs padrão
+
+**Formato**: Código de exemplo + explicações técnicas + provas matemáticas
+
+**Total Fase 1**: ~25-35% do dataset
+
+### Fase 2: A Prática de Elite (Style Transfer) - "Learning from Masters"
+
+**Aqui moldamos a "personalidade" do código.**
+
+**Objetivo**: Aprender padrões de código de produção, otimizações de baixo nível, estruturas de dados eficientes, estilo rigoroso.
+
+#### 2.1 Código de Referência de Alta Qualidade
+
+**Kernel Linux** (~15-20% do dataset)
+- **Objetivo**: Aprender padrões de sistemas de baixo nível, gerenciamento de memória, concorrência, otimizações de performance
+- **Fontes**: 
+  - `linux/kernel/` - Core kernel code
+  - `linux/mm/` - Memory management
+  - `linux/fs/` - File systems
+  - `linux/net/` - Network stack
+- **Foco**: Padrões de código C de produção, estruturas de dados eficientes, macros e otimizações
+- **Estratégia Especial**: Manter **árvore de diretórios** para entender dependências
+
+**Doom / Quake (id Tech)** (~10-15% do dataset)
+- **Objetivo**: Aprender código C extremamente otimizado, algoritmos de game engine, matemática vetorial rápida, truques de bits (Fast Inverse Square Root)
+- **Fontes**:
+  - `doom/doom/` - Game logic
+  - `doom/doomdef.h` - Data structures
+  - `doom/r_main.c` - Rendering optimizations
+  - `quake/` - Quake engine code
+- **Foco**: Performance crítica, otimizações de baixo nível, estruturas de dados compactas
+
+**SQLite / Redis** (~5-10% do dataset)
+- **SQLite**: Banco de dados robusto em C, arquitetura extremamente eficiente e estável
+- **Redis**: Estruturas de dados e algoritmos eficientes
+
+**Outras Referências de Qualidade** (~5-10% do dataset)
+- **nginx**: Servidor web de alta performance
+- **PostgreSQL**: Banco de dados relacional complexo
+- **LLVM**: Compiladores e otimizações
+
+**Estratégia de Dados Crítica**:
+- ✅ **Manter árvore de diretórios**: Para entender dependências e contexto
+- ✅ **Histórico de Commits de Fix**: Treinar com `(Code Before Bug) -> (Commit Message) -> (Code Fixed)`
+  - Isso ensina o Auditor a corrigir erros
+  - Formato: `{"instruction": "Analise este código inseguro", "input": "...", "output": "Correção com verificação de bounds..."}`
+
+**Total Fase 2**: ~35-55% do dataset
+
+#### 2.2 Mining de Commits (Bug -> Fix)
+
+**Ferramenta**: `tools/miner_elite.py`
+
+**Objetivo**: Extrair padrões de correção de bugs do histórico de commits de repositórios elite.
+
+**Estratégia**:
+1. Clonar repositórios (Linux, Doom, SQLite, Redis)
+2. Filtrar commits que contêm: "Fix", "Bug", "Leak", "Optim", "Security"
+3. Extrair:
+   - Código antes do bug
+   - Mensagem do commit
+   - Código corrigido
+4. Formatar para JSONL:
+   ```json
+   {
+     "instruction": "Analise este código inseguro e corrija",
+     "input": "void unsafe_copy(char* dest, char* src, int len) { memcpy(dest, src, len); }",
+     "output": "void safe_copy(char* dest, char* src, size_t len) { if (dest && src && len > 0) { memcpy(dest, src, len); } }"
+   }
+   ```
+
+**Benefício**: Ensina o Auditor a identificar e corrigir bugs comuns.
+
+### Fase 3: O Dojo (Reinforcement Learning) - "AlphaZero Style"
+
+**Após o Fine-Tuning, a IA treina sozinha no Google Colab.**
+
+**Objetivo**: Aprendizado iterativo através de auto-jogo, melhoria contínua através de auto-avaliação.
+
+#### 3.1 O Ambiente (Gym)
+
+**Componentes**:
+- **Script Python**: Gera problemas de algoritmos (ex: "Inverta uma Binary Tree sem usar recursão")
+- **Compilador**: `gcc -O3 -fsanitize=address` (detecta memory leaks, buffer overflows)
+- **Profiler**: Mede performance (tempo de execução, uso de memória)
+- **Test Runner**: Executa testes automaticamente
+
+#### 3.2 O Ciclo de Recompensa (Reward Function)
+
+**Sistema de Pontuação Detalhado**:
+
+| Evento | Pontuação | Descrição |
+|--------|-----------|-----------|
+| **Erro de Compilação** | -10 pts | Código não compila |
+| **Crash (Segfault/ASAN)** | -20 pts | Memory leak ou buffer overflow detectado |
+| **Funciona (Lento)** | +1 pt | Código funciona mas é ineficiente |
+| **Funciona (Rápido/Memória Baixa)** | +50 pts | Otimização excelente (aqui ela aprende as otimizações do Doom) |
+| **Código Limpo (Style Check)** | +5 pts | Segue padrões de estilo (Kernel Linux, Doom) |
+| **Todos os Testes Passam** | +10 pts | Funcionalidade completa |
+| **Complexidade Ótima** | +15 pts | Big O otimizado (O(N) vs O(N²)) |
+| **SIMD Utilizado** | +10 pts | AVX2/AVX-512 usado corretamente |
+| **Proof Matemático Correto** | +10 pts | Complexidade provada matematicamente |
+
+**Total Máximo**: +100 pts (código perfeito)
+
+**Total Mínimo**: -30 pts (código quebrado)
+
+#### 3.3 Metodologia AlphaZero
+
+**Componentes**:
+1. **Self-Play**: O modelo gera código, executa testes, avalia qualidade
+2. **Reinforcement Learning**: Recompensas baseadas na tabela acima
+3. **Monte Carlo Tree Search (MCTS)**: Exploração de diferentes abordagens de implementação
+4. **Value Network**: Avaliação de qualidade do código gerado
+5. **Policy Network**: Decisões sobre qual código gerar
+
+**Ciclo de Treinamento AlphaZero**:
+```
+┌─────────────────────────────────────────────────────────┐
+│ 1. GENERATION: Architect gera código                   │
+│ 2. EXECUTION: Executa testes automaticamente            │
+│ 3. COMPILATION: GCC + ASAN valida segurança             │
+│ 4. PROFILING: Mede performance (tempo/memória)        │
+│ 5. EVALUATION: Calcula recompensa (reward function)    │
+│ 6. LEARNING: Atualiza política baseado em recompensa   │
+│ 7. ITERATION: Repete até convergência                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Critérios de Convergência**:
+- Recompensa média > +80 pts por 100 iterações consecutivas
+- Taxa de aprovação do Auditor > 90%
+- Taxa de compilação bem-sucedida > 95%
+
+**Total Fase 3**: ~10-15% do dataset (auto-gerado)
+
+### LeetCode e Problemas Algorítmicos (~5-10% do dataset)
+
+**Objetivo**: Resolver problemas algorítmicos complexos, aprender padrões comuns, otimização de soluções
+
+**Estratégia de Cobertura**:
+- **Easy**: 20% - Fundamentos, sintaxe básica
+- **Medium**: 50% - Algoritmos intermediários, estruturas de dados
+- **Hard**: 30% - Problemas complexos, otimizações avançadas
+
+**Categorias Prioritárias**:
+- Arrays & Strings
+- Linked Lists
+- Trees & Graphs
+- Dynamic Programming
+- Greedy Algorithms
+- Backtracking
+- Bit Manipulation
+- System Design (simplificado)
+
+**Formato**: Problema → Solução otimizada → Análise de complexidade → Testes
+
+**Objetivo**: Resolver problemas algorítmicos complexos, aprender padrões comuns, otimização de soluções
+
+**Estratégia de Cobertura**:
+- **Easy**: 20% - Fundamentos, sintaxe básica
+- **Medium**: 50% - Algoritmos intermediários, estruturas de dados
+- **Hard**: 30% - Problemas complexos, otimizações avançadas
+
+**Categorias Prioritárias**:
+- Arrays & Strings
+- Linked Lists
+- Trees & Graphs
+- Dynamic Programming
+- Greedy Algorithms
+- Backtracking
+- Bit Manipulation
+- System Design (simplificado)
+
+**Formato**: Problema → Solução otimizada → Análise de complexidade → Testes
+
+### Estrutura do Dataset Final
+
+| Fase | Categoria | Percentual | Tamanho Estimado | Prioridade |
+|------|----------|------------|------------------|------------|
+| **Fase 1** | Livros Fundamentais | 20-25% | ~30-40GB | 🔴 Crítica |
+| **Fase 1** | Manuais Técnicos | 5-10% | ~8-15GB | 🔴 Crítica |
+| **Fase 2** | Kernel Linux | 15-20% | ~25-35GB | 🔴 Crítica |
+| **Fase 2** | Doom/Quake | 10-15% | ~15-25GB | 🔴 Crítica |
+| **Fase 2** | SQLite/Redis | 5-10% | ~8-15GB | 🟡 Alta |
+| **Fase 2** | Outras Referências | 5-10% | ~8-15GB | 🟡 Alta |
+| **Fase 2** | Mining Commits (Bug->Fix) | 5-10% | ~8-15GB | 🔴 Crítica |
+| **Fase 3** | AlphaZero Self-Play | 10-15% | ~15-25GB | 🟡 Alta |
+| **Extra** | LeetCode | 5-10% | ~8-15GB | 🟡 Alta |
+| **TOTAL** | | 100% | ~125-200GB | |
+
+### Pipeline de Preparação de Dados
+
+**Ferramenta Principal**: `tools/miner_elite.py`
+
+**Funcionalidades**:
+1. Clonar repositórios elite (Linux, Doom, SQLite, Redis, etc)
+2. Extrair funções C mantendo estrutura de diretórios
+3. Filtrar commits com "Fix", "Bug", "Leak", "Optim"
+4. Gerar pares (Code Before Bug) -> (Code Fixed)
+5. Formatar para JSONL compatível com fine-tuning
+
+**Estrutura de Dados**:
+
+```c
+// Estrutura para dataset de treinamento (New-QorusIA v3.0)
+#include "qorus.h"
+
+typedef struct {
+    // Fase 1: Teoria
+    q_code_sample* book_samples;         // CSAPP, K&R, CLRS, etc
+    q_code_sample* manual_samples;       // Intel SDM, ARM, POSIX
+    
+    // Fase 2: Prática Elite
+    q_code_sample* kernel_samples;      // Kernel Linux
+    q_code_sample* doom_samples;         // Doom/Quake
+    q_code_sample* sqlite_samples;       // SQLite
+    q_code_sample* redis_samples;        // Redis
+    q_code_sample* other_ref_samples;    // Outras referências
+    
+    // Fase 2: Mining Commits
+    q_bug_fix_pair* bug_fix_pairs;       // (Code Before) -> (Code Fixed)
+    
+    // Fase 3: AlphaZero
+    q_self_play_sample* self_play_samples; // Auto-gerado
+    
+    // Extra
+    q_code_sample* leetcode_samples;     // LeetCode
+    
+    uint64_t total_samples;
+    uint64_t total_tokens;
+} q_training_dataset;
+
+// Par Bug -> Fix
+typedef struct {
+    char* code_before;        // Código com bug
+    char* commit_message;    // Mensagem do commit
+    char* code_after;         // Código corrigido
+    char* language;           // "c", "python", etc
+    char* bug_type;          // "memory_leak", "buffer_overflow", etc
+} q_bug_fix_pair;
+
+// Preparar dataset balanceado
+q_error_code q_prepare_training_dataset(
+    const char* kernel_path,
+    const char* doom_path,
+    const char* sqlite_path,
+    const char* redis_path,
+    const char* reference_paths[],
+    const char* books_paths[],
+    const char* manuals_paths[],
+    const char* leetcode_path,
+    q_training_dataset** out_dataset
+);
+```
+
+**Script Python**: `tools/miner_elite.py`
+
+```python
+#!/usr/bin/env python3
+"""
+Miner Elite: Extrai código de qualidade de repositórios elite
+e gera dataset de treinamento para Qorus-IA Code Agent.
+"""
+
+import os
+import subprocess
+import json
+import re
+from pathlib import Path
+
+def clone_repo(url, dest_dir):
+    """Clona repositório se não existir."""
+    if os.path.exists(dest_dir):
+        print(f"✓ {dest_dir} já existe")
+        return
+    print(f"Clonando {url}...")
+    subprocess.run(["git", "clone", url, dest_dir], check=True)
+
+def extract_functions(c_file):
+    """Extrai funções C de um arquivo."""
+    # Implementação: parse C code, extract functions
+    pass
+
+def find_fix_commits(repo_path):
+    """Encontra commits com 'Fix', 'Bug', 'Leak', 'Optim'."""
+    result = subprocess.run(
+        ["git", "-C", repo_path, "log", "--grep", "Fix|Bug|Leak|Optim", "--oneline"],
+        capture_output=True, text=True
+    )
+    return result.stdout.split('\n')
+
+def extract_bug_fix_pair(repo_path, commit_hash):
+    """Extrai par (Code Before) -> (Code Fixed) de um commit."""
+    # Implementação: git show, diff, extract code
+    pass
+
+def generate_jsonl(dataset_dir, output_file):
+    """Gera arquivo JSONL para fine-tuning."""
+    with open(output_file, 'w') as f:
+        # Iterar sobre samples e escrever JSONL
+        pass
+
+if __name__ == "__main__":
+    repos = {
+        "linux": "https://github.com/torvalds/linux",
+        "doom": "https://github.com/id-Software/DOOM",
+        "sqlite": "https://www.sqlite.org/src",
+        "redis": "https://github.com/redis/redis"
+    }
+    
+    dataset_dir = "dataset_elite"
+    os.makedirs(dataset_dir, exist_ok=True)
+    
+    # Clonar repositórios
+    for name, url in repos.items():
+        clone_repo(url, os.path.join(dataset_dir, name))
+    
+    # Extrair código e commits
+    # Gerar JSONL
+    generate_jsonl(dataset_dir, "dataset_elite.jsonl")
+```
+
+### Estratégia de Tokenização Multi-Linguagem
+
+O tokenizer deve ser treinado especificamente para:
+- **C**: Padrões do kernel Linux, Doom, SQLite
+- **Python**: LeetCode solutions, CSAPP examples
+- **JavaScript/TypeScript**: Code examples de livros
+- **SQL**: PostgreSQL, SQLite queries
+- **Markdown**: Documentação técnica (CSAPP, livros)
+
+**Vocabulário Estimado**: 80k-120k tokens (incluindo tokens especiais para código)
+
+---
+
+## 🤝 ARQUITETURA COLABORATIVA: CODE AGENT + REVIEW AGENT
+
+### Conceito: Dupla Especializada
+
+O **Qorus-IA Code Agent** trabalha em colaboração com um **Review Agent** especializado. Esta arquitetura dual garante que todo código gerado seja revisado, testado e validado antes de ser considerado "pronto".
+
+**Filosofia**: "Dois agentes são melhores que um" - especialização e validação cruzada.
+
+### Code Agent: Gerador de Código
+
+**Responsabilidades**:
+- Geração de código baseada em requisitos
+- Implementação seguindo TDD + MFR + CoT + Proof
+- Geração de testes iniciais
+- Proposta de modelo de dados (MFR)
+
+**Especialização**: Criatividade, geração, implementação
+
+### Review Agent: Validador de Qualidade
+
+**Responsabilidades**:
+- **Code Review**: Análise estática de código, detecção de bugs potenciais
+- **Test Generation**: Geração adicional de testes (edge cases, stress tests)
+- **Debug Analysis**: Identificação de problemas, sugestões de correção
+- **Quality Assurance**: Validação contra padrões, métricas de qualidade
+- **Proof Verification**: Verificação matemática de complexidade e corretude
+
+**Especialização**: Análise crítica, validação, garantia de qualidade
+
+### Arquitetura Colaborativa Detalhada
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    REQUEST (Desenvolvedor)                  │
+│              "Implemente função de ordenação"               │
+└───────────────────────┬─────────────────────────────────────┘
+                        │
+                        ↓
+┌─────────────────────────────────────────────────────────────┐
+│              CODE AGENT (Geração)                          │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ FASE 0: CoT - Raciocínio                            │  │
+│  │ FASE 0.5: Proof - Validação Matemática              │  │
+│  │ FASE 1: MFR - Modelo de Dados                       │  │
+│  │ FASE 2: TDD - Testes Iniciais                       │  │
+│  │ FASE 3: Implementação - Código                      │  │
+│  └───────────────────┬──────────────────────────────────┘  │
+│                      │ Código + Testes + Modelo + Proof    │
+│                      ↓                                      │
+┌─────────────────────────────────────────────────────────────┐
+│              REVIEW AGENT (Validação)                      │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ 1. Code Review: Análise estática                     │  │
+│  │ 2. Test Expansion: Testes adicionais                 │  │
+│  │ 3. Proof Verification: Validação matemática          │  │
+│  │ 4. Quality Metrics: Complexidade, manutenibilidade   │  │
+│  │ 5. Debug Analysis: Identificação de problemas        │  │
+│  └───────────────────┬──────────────────────────────────┘  │
+│                      │ Feedback + Testes Adicionais        │
+│                      ↓                                      │
+┌─────────────────────────────────────────────────────────────┐
+│              CODE AGENT (Refinamento)                      │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ FASE 5: Refinamento baseado em feedback              │  │
+│  │ - Corrigir problemas identificados                    │  │
+│  │ - Adicionar testes faltantes                         │  │
+│  │ - Melhorar qualidade                                 │  │
+│  └───────────────────┬──────────────────────────────────┘  │
+│                      │ Código Refinado                     │
+│                      ↓                                      │
+┌─────────────────────────────────────────────────────────────┐
+│              REVIEW AGENT (Validação Final)                │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ Validação Final: Aprovação ou Rejeição               │  │
+│  └───────────────────┬──────────────────────────────────┘  │
+│                      │ Aprovado / Rejeitado                │
+│                      ↓                                      │
+┌─────────────────────────────────────────────────────────────┐
+│                    RESPONSE (Desenvolvedor)               │
+│              Código validado e testado                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Implementação Técnica
+
+```c
+// Estrutura para Review Agent
+typedef struct s_review_agent {
+    t_model *review_model;              // Modelo especializado em revisão
+    t_code_tokenizer *tokenizer;
+    
+    // Capacidades especializadas
+    t_code_reviewer *reviewer;          // Análise estática
+    t_test_generator *test_gen;         // Geração de testes
+    t_debug_analyzer *debugger;         // Análise de debug
+    t_quality_metrics *metrics;         // Métricas de qualidade
+    t_proof_verifier *proof_verifier;   // Verificação de proofs
+} t_review_agent;
+
+// Resultado da revisão
+typedef struct s_review_result {
+    bool approved;                      // Aprovado ou não
+    t_code_issue *issues;              // Lista de problemas encontrados
+    uint32_t num_issues;
+    t_proposed_test *additional_tests; // Testes adicionais sugeridos
+    uint32_t num_additional_tests;
+    t_quality_score *quality_score;    // Score de qualidade
+    t_proof_verification *proof_check;  // Verificação de proof
+    char *feedback;                    // Feedback textual
+} t_review_result;
+
+// Revisar código gerado pelo Code Agent
+t_review_result *review_agent_review(t_review_agent *agent,
+                                      const char *generated_code,
+                                      const char *tests,
+                                      const char *data_model,
+                                      const t_mathematical_proof *proof,
+                                      const char *language);
+
+// Gerar testes adicionais
+t_proposed_test *review_agent_generate_tests(t_review_agent *agent,
+                                               const char *code,
+                                               const char *existing_tests,
+                                               const char *data_model,
+                                               const char *language);
+
+// Analisar problemas de debug
+t_debug_analysis *review_agent_analyze_debug(t_review_agent *agent,
+                                               const char *code,
+                                               const char *test_output,
+                                               const char *error_message);
+
+// Verificar proof matemático
+t_proof_verification *review_agent_verify_proof(t_review_agent *agent,
+                                                 const char *code,
+                                                 const t_mathematical_proof *proof);
+```
+
+### Fluxo Integrado Code Agent + Review Agent
+
+```c
+// Fluxo completo com colaboração
+int execute_collaborative_flow(t_code_agent *code_agent,
+                                 t_review_agent *review_agent,
+                                 const char *requirement,
+                                 const char *language,
+                                 t_developer_feedback *feedback) {
+    t_tdd_mfr_cot_proof_flow *flow = calloc(1, sizeof(t_tdd_mfr_cot_proof_flow));
+    
+    // CODE AGENT: Geração inicial
+    int ret = execute_tdd_mfr_cot_proof_flow(flow, requirement, language, feedback);
+    if (ret != 0) {
+        return ret;
+    }
+    
+    // REVIEW AGENT: Primeira revisão
+    t_review_result *review = review_agent_review(review_agent,
+                                                    flow->generated_code,
+                                                    flow->tests->test_code,
+                                                    flow->model->model_str,
+                                                    flow->proof,
+                                                    language);
+    
+    // Se não aprovado, refinar
+    uint32_t iteration = 0;
+    while (!review->approved && iteration < MAX_REVIEW_ITERATIONS) {
+        // Adicionar testes sugeridos
+        if (review->num_additional_tests > 0) {
+            flow->tests = merge_tests(flow->tests, review->additional_tests);
+        }
+        
+        // Corrigir problemas identificados
+        flow->generated_code = fix_issues(flow->generated_code,
+                                           review->issues,
+                                           review->num_issues);
+        
+        // Re-executar testes
+        flow->test_results = agent_run_tests(flow->generated_code, flow->tests);
+        
+        // Revisar novamente
+        review = review_agent_review(review_agent,
+                                     flow->generated_code,
+                                     flow->tests->test_code,
+                                     flow->model->model_str,
+                                     flow->proof,
+                                     language);
+        iteration++;
+    }
+    
+    if (review->approved) {
+        return 0; // Sucesso
+    } else {
+        return -1; // Falhou após iterações
+    }
+}
+```
+
+### Treinamento do Review Agent
+
+O **Review Agent** será treinado com foco em:
+- **Code Review**: Dataset de código com bugs conhecidos + correções
+- **Test Generation**: Problemas LeetCode + testes completos
+- **Debug Analysis**: Stack traces + código problemático + soluções
+- **Quality Metrics**: Código de alta qualidade vs código de baixa qualidade
+- **Proof Verification**: Código + proofs matemáticos + validações
+
+**Dataset Especializado**:
+- 40% Code Review (bugs + correções)
+- 30% Test Generation (problemas + testes completos)
+- 20% Debug Analysis (erros + soluções)
+- 10% Quality Metrics (exemplos bons vs ruins)
+
+---
+
 
 ---
 
@@ -398,6 +1319,32 @@ t_error_recovery *analyze_error(const char *error_output,
 | **Integração Core** | 4-6h | 🔴 Crítica | execute_tdd_mfr_cot_proof_flow() completo |
 | **Subtotal** | **48-66h** | | |
 
+#### Fase 3.5: Review Agent (Crítico - Garantia de Qualidade)
+
+| Componente | Horas | Prioridade | Descrição |
+|------------|-------|------------|-----------|
+| **Review Agent Model** | 12-16h | 🔴 Crítica | Modelo especializado em revisão de código |
+| **Code Review Engine** | 8-10h | 🔴 Crítica | Análise estática, detecção de bugs potenciais |
+| **Test Generation Engine** | 6-8h | 🔴 Crítica | Geração de testes adicionais (edge cases, stress) |
+| **Debug Analysis Engine** | 6-8h | 🔴 Crítica | Análise de erros, identificação de problemas |
+| **Quality Metrics** | 4-6h | 🟡 Alta | Métricas de qualidade (complexidade, manutenibilidade) |
+| **Proof Verification Engine** | 4-6h | 🔴 Crítica | Verificação matemática de proofs |
+| **Integração Colaborativa** | 4-6h | 🔴 Crítica | execute_collaborative_flow() Code + Review |
+| **Subtotal** | **44-60h** | | |
+
+#### Fase 0: Preparação de Dataset e Treinamento (Pré-requisito)
+
+| Componente | Horas | Prioridade | Descrição |
+|------------|-------|------------|-----------|
+| **Coleta Código de Referência** | 20-30h | 🔴 Crítica | Kernel Linux, Doom, SQLite, Redis, etc |
+| **Processamento Literatura Técnica** | 15-20h | 🔴 Crítica | CSAPP, K&R, livros de estruturas de dados |
+| **Preparação LeetCode Dataset** | 10-15h | 🟡 Alta | Problemas + soluções otimizadas |
+| **Pipeline AlphaZero** | 20-30h | 🟡 Alta | Self-play, MCTS, reinforcement learning |
+| **Tokenização Multi-Linguagem** | 8-12h | 🔴 Crítica | BPE/SentencePiece para dataset completo |
+| **Treinamento Code Agent** | 80-120h | 🔴 Crítica | Fine-tuning com dataset especializado |
+| **Treinamento Review Agent** | 60-90h | 🔴 Crítica | Treinamento especializado em revisão |
+| **Subtotal** | **213-317h** | | |
+
 #### Fase 4: Funcionalidades Básicas
 
 | Componente | Horas | Prioridade | Descrição |
@@ -430,17 +1377,21 @@ t_error_recovery *analyze_error(const char *error_output,
 
 | Fase | Horas | Prioridade | Bloqueador? |
 |------|-------|------------|-------------|
+| **Preparação Dataset e Treinamento** | 213-317h | 🔴 Crítica | ✅ Sim |
 | **Base LLM** | 33-45h | 🔴 Crítica | ✅ Sim |
 | **Especialização** | 8-12h | 🟡 Alta | ✅ Sim |
 | **TDD+MFR+CoT+Proof Core** | 48-66h | 🔴 Crítica | ✅ Sim |
+| **Review Agent** | 44-60h | 🔴 Crítica | ✅ Sim |
 | **Funcionalidades** | 26-34h | 🟡 Média | ❌ Não |
 | **Design-to-Code** | 48-72h | 🟡 Alta | ❌ Não |
 | **Integração** | 32-46h | 🟡 Alta | ⚠️ Parcial |
-| **TOTAL** | **195-275h** | | |
+| **TOTAL** | **452-658h** | | |
 
-**MVP Mínimo**: 89-123h (Base LLM + Especialização + TDD+MFR+CoT+Proof básico)  
-**Produto Completo**: 133-188h (MVP + Funcionalidades + Integração)  
-**Produto Premium**: 195-275h (Todos os componentes)
+**MVP Mínimo**: 346-498h (Dataset + Treinamento + Base LLM + Especialização + TDD+MFR+CoT+Proof + Review Agent básico)  
+**Produto Completo**: 404-578h (MVP + Funcionalidades + Integração)  
+**Produto Premium**: 452-658h (Todos os componentes incluindo Design-to-Code)
+
+**Nota**: As horas de treinamento (213-317h) podem ser executadas em paralelo com desenvolvimento, reduzindo tempo total do projeto.
 
 ---
 
@@ -680,8 +1631,11 @@ int execute_tdd_mfr_cot_proof_flow(t_tdd_mfr_cot_proof_flow *flow,
 #### Naming Conventions
 
 ```c
-// Prefixo obrigatório: ft_ para todas funções
-int ft_function_name(const t_tensor *input, t_tensor *output);
+// Prefixo obrigatório: q_ para todas funções públicas (New-QorusIA v3.0)
+// Funções internas podem usar prefixo específico do módulo
+q_error_code q_function_name(const q_tensor* restrict input, 
+                              q_tensor* restrict output,
+                              q_context* restrict ctx);
 
 // Naming: snake_case sempre
 typedef struct s_struct_name {
@@ -695,28 +1649,40 @@ typedef struct s_struct_name {
 #### Error Handling
 
 ```c
-// Sempre retornar int: 0 = sucesso, negativo = erro
-int ft_function(const t_tensor *input, t_tensor *output) {
-    if (!input || !output) {
-        return -1;
-    }
-    return 0;
+// Sempre retornar q_error_code (New-QorusIA v3.0)
+q_error_code q_function(const q_tensor* restrict input,
+                        q_tensor* restrict output,
+                        q_context* restrict ctx) {
+    Q_VALIDATE_PTR_OR_RETURN(input);
+    Q_VALIDATE_PTR_OR_RETURN(output);
+    Q_VALIDATE_PTR_OR_RETURN(ctx);
+    
+    // Implementação...
+    
+    return Q_OK;
 }
 ```
 
 #### Memory Management
 
 ```c
-// TODOS tensores devem ser 64-byte aligned
-t_tensor *ft_tensor_create(uint32_t *shape, uint32_t ndim) {
-    t_tensor *t = calloc(1, sizeof(t_tensor));
-    size_t size = calculate_size(shape, ndim);
-    void *data = NULL;
-    if (posix_memalign(&data, 64, size * sizeof(float)) != 0) {
-        free(t);
-        return NULL;
+// TODOS tensores devem ser 64-byte aligned (New-QorusIA v3.0)
+// Usar q_arena_alloc() para alocação na Arena (zero-malloc no hot path)
+q_error_code q_create_tensor(q_context* restrict ctx,
+                              const uint32_t shape[4],
+                              q_tensor* restrict out) {
+    Q_VALIDATE_PTR_OR_RETURN(ctx);
+    Q_VALIDATE_PTR_OR_RETURN(out);
+    
+    size_t size = calculate_size(shape);
+    void* data = q_arena_alloc(ctx, size * sizeof(float));
+    if (!data) {
+        return Q_ERR_OOM;
     }
-    // ...
+    
+    // Inicializar q_tensor...
+    
+    return Q_OK;
 }
 ```
 
@@ -776,25 +1742,26 @@ int main(void)
 ```c
 #define MAX_DIMS 8
 
-typedef struct s_tensor {
-    float *data;                    // Dados (64-byte aligned)
-    uint32_t shape[MAX_DIMS];
-    uint32_t ndim;
-    size_t size;
-    size_t strides[MAX_DIMS];
-    bool is_view;
-    struct s_tensor *view_source;
-} t_tensor;
+// Usar tipos do New-QorusIA v3.0
+// q_tensor já definido em include/qorus_types.h
+// q_context já definido em include/qorus_types.h
+// q_error_code já definido em include/qorus_types.h
 
-typedef struct s_code_agent {
-    t_model *llm_model;
-    t_code_tokenizer *tokenizer;
-    t_embedding *embeddings;
-    t_decoder_stack *decoder;
-    t_lm_head *lm_head;
-    t_tdd_mfr_cot_proof_flow *core_flow;
-    t_code_generation_config default_config;
-} t_code_agent;
+typedef struct {
+    q_context* ctx;                    // Contexto de memória New-QorusIA
+    q_tokenizer* tokenizer;            // Tokenizer multi-linguagem
+    
+    // Base Model (congelado, compartilhado)
+    void* base_model_weights;          // Pesos do modelo base (mmap)
+    
+    // LoRA Adapters (pequenos, trocáveis)
+    void* architect_lora_weights;      // Pesos do adaptador Architect (~2GB)
+    void* auditor_lora_weights;        // Pesos do adaptador Auditor (~2GB)
+    
+    // Core Flow
+    q_tdd_mfr_cot_proof_flow* core_flow;
+    q_code_generation_config default_config;
+} q_code_agent;
 ```
 
 ### Constraints e Invariantes
@@ -931,9 +1898,28 @@ sudo chmod +x /usr/local/bin/qorus-ia-lsp
 
 - **GPT-2**: "Language Models are Unsupervised Multitask Learners" (Radford et al., 2019)
 - **Codex**: "Evaluating Large Language Models Trained on Code" (Chen et al., 2021)
+- **AlphaZero**: "Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm" (Silver et al., 2017)
 - **llama.cpp**: Implementação C++ otimizada
 - **tiktoken**: BPE robusto (OpenAI)
 - **LSP**: Language Server Protocol
+
+### Referências de Código de Qualidade
+
+- **Linux Kernel**: https://github.com/torvalds/linux
+- **Doom (id Software)**: https://github.com/id-Software/DOOM
+- **SQLite**: https://www.sqlite.org/
+- **Redis**: https://github.com/redis/redis
+- **nginx**: https://github.com/nginx/nginx
+- **PostgreSQL**: https://github.com/postgres/postgres
+- **LLVM**: https://github.com/llvm/llvm-project
+
+### Referências de Literatura Técnica
+
+- **CSAPP**: "Computer Systems: A Programmer's Perspective" (Bryant & O'Hallaron, 3rd Edition)
+- **K&R**: "The C Programming Language" (Kernighan & Ritchie, 2nd Edition)
+- **CLRS**: "Introduction to Algorithms" (Cormen, Leiserson, Rivest, Stein, 4th Edition)
+- **Sedgewick**: "Algorithms" (Sedgewick & Wayne, 4th Edition)
+- **LeetCode**: https://leetcode.com/
 
 ### Checklist de Implementação
 
@@ -949,6 +1935,15 @@ sudo chmod +x /usr/local/bin/qorus-ia-lsp
 - [ ] Context Manager (2-3h)
 - [ ] Multi-file Context (2-3h)
 
+#### Fase 0: Preparação Dataset e Treinamento
+- [ ] Coleta código de referência (20-30h)
+- [ ] Processamento literatura técnica (15-20h)
+- [ ] Preparação LeetCode dataset (10-15h)
+- [ ] Pipeline AlphaZero (20-30h)
+- [ ] Tokenização multi-linguagem (8-12h)
+- [ ] Treinamento Code Agent (80-120h)
+- [ ] Treinamento Review Agent (60-90h)
+
 #### Fase 3: TDD + MFR + CoT + Proof Core
 - [ ] Templates de prompt (8-12h)
 - [ ] Geração automática de proofs (10-14h)
@@ -956,6 +1951,15 @@ sudo chmod +x /usr/local/bin/qorus-ia-lsp
 - [ ] Execução e validação (8-10h)
 - [ ] Refinamento iterativo (6-8h)
 - [ ] Integração core (4-6h)
+
+#### Fase 3.5: Review Agent
+- [ ] Review Agent Model (12-16h)
+- [ ] Code Review Engine (8-10h)
+- [ ] Test Generation Engine (6-8h)
+- [ ] Debug Analysis Engine (6-8h)
+- [ ] Quality Metrics (4-6h)
+- [ ] Proof Verification Engine (4-6h)
+- [ ] Integração colaborativa (4-6h)
 
 #### Fase 4: Funcionalidades
 - [ ] Code Completion (8-10h)
@@ -979,23 +1983,37 @@ sudo chmod +x /usr/local/bin/qorus-ia-lsp
 
 **Status Atual**: ~30-40% completo (especificação)
 
-**MVP Funcional**: 89-123 horas (~2-3 semanas full-time)
-- Base LLM + Especialização + TDD+MFR+CoT+Proof básico
+**MVP Funcional**: 346-498 horas (~9-12 semanas full-time)
+- Preparação Dataset + Treinamento + Base LLM + Especialização + TDD+MFR+CoT+Proof + Review Agent básico
 
-**Produto Completo**: 133-188 horas (~3-4 semanas full-time)
+**Produto Completo**: 404-578 horas (~10-14 semanas full-time)
 - MVP + Funcionalidades + Integração
 
-**Produto Premium**: 195-275 horas (~5-6 semanas full-time)
+**Produto Premium**: 452-658 horas (~11-16 semanas full-time)
 - Todos os componentes incluindo Design-to-Code
 
 **Bloqueadores Críticos:**
-1. Base LLM (33-45h) - Sem isso, nada funciona
-2. TDD+MFR+CoT+Proof Core (48-66h) - Diferencial competitivo único
+1. **Preparação Dataset e Treinamento** (213-317h) - Base fundamental para qualidade
+2. **Base LLM** (33-45h) - Sem isso, nada funciona
+3. **TDD+MFR+CoT+Proof Core** (48-66h) - Diferencial competitivo único
+4. **Review Agent** (44-60h) - Garantia de qualidade através de validação colaborativa
 
-**Recomendação**: Focar no MVP primeiro (89-123h), depois expandir progressivamente.
+**Diferenciais Únicos:**
+1. **Treinamento Especializado**: Kernel Linux + Doom + CSAPP + LeetCode + AlphaZero
+2. **Arquitetura Colaborativa**: Code Agent + Review Agent trabalhando em conjunto
+3. **Metodologia Rigorosa**: TDD + MFR + CoT + Proof integrado e obrigatório
+
+**Recomendação**: 
+- **Fase 1**: Preparar dataset e treinar modelos em paralelo com desenvolvimento (213-317h)
+- **Fase 2**: Implementar MVP funcional (Base LLM + Especialização + TDD+MFR+CoT+Proof + Review Agent básico)
+- **Fase 3**: Expandir com funcionalidades e integração
+- **Fase 4**: Adicionar Design-to-Code (opcional)
 
 ---
 
 **Última Atualização**: 2024-12-29  
-**Versão**: v2.1.0 (Reorganizado para Implementação Prática + Mathematical Proof)  
-**Metodologia Core**: TDD + MFR + CoT + Proof (Integrado e Obrigatório)
+**Versão**: v3.1.0 (Elite System - Dual-Agent Architecture)  
+**Metodologia Core**: TDD + MFR + CoT + Proof (Integrado e Obrigatório)  
+**Arquitetura**: Architect + Auditor (Dual-Agent com LoRA Adapters)  
+**Engine**: Qorus-IA v3.0 (C/CUDA Hybrid)  
+**Base de Conhecimento**: Elite Repos (Linux/Doom) + Livros de Engenharia + AlphaZero

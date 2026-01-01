@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 // Alinhamento obrigatório para AVX2/AVX-512
 #define Q_ALIGN 64
@@ -101,8 +102,18 @@ typedef enum {
     Q_VALIDATE_OR_RETURN((ptr) != NULL, (error_code))
 
 // Alignment validation - returns error code
+// NOTE: Q_ALIGN is 64 bytes, but AVX2 needs 32-byte alignment
+// This macro checks 32-byte alignment (not Q_ALIGN) for AVX2 compatibility
 #define Q_VALIDATE_ALIGNED_OR_RETURN(ptr, error_code) \
-    Q_VALIDATE_OR_RETURN(((uintptr_t)(ptr) % Q_ALIGN) == 0, (error_code))
+    do { \
+        uintptr_t ptr_addr = (uintptr_t)(ptr); \
+        uintptr_t misalignment = ptr_addr % 32; \
+        if (misalignment != 0) { \
+            fprintf(stderr, "ERROR: Q_VALIDATE_ALIGNED_OR_RETURN failed at %s:%d\n", __FILE__, __LINE__); \
+            fprintf(stderr, "  ptr=%p, addr=%zu, %% 32 = %zu\n", (ptr), ptr_addr, misalignment); \
+            return (error_code); \
+        } \
+    } while (0)
 
 // Size validation (multiple of N) - returns error code
 #define Q_VALIDATE_MULTIPLE_OR_RETURN(value, multiple, error_code) \

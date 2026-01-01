@@ -34,7 +34,11 @@ qorus-ia/
 │   │   └── utils.c         # Timing, Logging, SIMD detection
 │   ├── ops/                # Kernels Matemáticos (Otimizados)
 │   │   ├── cpu/            # Fallbacks em C puro (Referência)
-│   │   └── avx2/           # Kernels AVX2 (MatMul Q4, MatMul FP32, RoPE, RMSNorm, Add, Mul, Causal Mask, Loss, Clip)
+│   │   ├── avx2/           # Kernels AVX2 (MatMul Q4, MatMul FP32, RoPE, RMSNorm, Add, Mul, Causal Mask, Loss, Clip)
+│   │   └── cuda/           # Kernels CUDA (Para Google Colab / GPU) - FUTURO
+│   │       ├── q_cuda_utils.cu  # Gerenciamento de memória GPU
+│   │       ├── matmul.cu        # Calls to cuBLAS
+│   │       └── rope.cu          # Custom Kernel
 │   ├── optim/              # Optimizers (Training) - NEW
 │   │   ├── optimizer.c     # Base optimizer interface
 │   │   ├── adam.c          # Adam/AdamW optimizer
@@ -79,27 +83,42 @@ typedef enum {
     Q_Q4_0 = 2  // Pesos (Dense Layers)
 } q_dtype;
 
+// Device type (CPU or GPU) - NEW for CUDA support
+typedef enum {
+    Q_DEVICE_CPU = 0,
+    Q_DEVICE_CUDA = 1
+} q_device_type;
+
 // Tensor View (Não possui a memória, apenas aponta)
 typedef struct {
-    void*     data;         // Ponteiro para dados (Mmap ou Arena)
+    void*     data;         // Ponteiro para dados (Mmap, Arena, ou GPU)
     float*    scales;       // Ponteiro para escalas (se quantizado)
     uint32_t  ne[4];        // Dimensões: [Batch, Head, Seq, Dim]
     size_t    nb[4];        // Strides em bytes
     q_dtype   type;         // Tipo de dado
+    q_device_type device;  // NEW: CPU ou CUDA (para seleção automática de kernel)
     char      name[32];     // Debugging
 } __attribute__((aligned(Q_ALIGN))) q_tensor;
 
 // Contexto Global de Memória
 typedef struct {
-    void* weights_mmap;     // Ponteiro base do arquivo mapeado
+    // Tier 1: Weights (Read-Only)
+    void* weights_mmap;     // CPU: mmap, GPU: NULL (pesos ficam em GPU)
     size_t weights_size;
     
-    void* kv_buffer;        // Buffer persistente para KV Cache
+    // Tier 2: KV Cache (Persistent)
+    void* kv_buffer;        // CPU: aligned_alloc, GPU: cudaMalloc
     size_t kv_size;
+    q_device_type kv_device;  // NEW: Onde está o KV cache
     
-    void* scratch_buffer;   // Buffer temporário (Arena)
+    // Tier 3: Scratchpad (Transient)
+    void* scratch_buffer;   // CPU: aligned_alloc, GPU: cudaMalloc
     size_t scratch_size;
     size_t scratch_head;    // Posição atual na Arena
+    q_device_type scratch_device;  // NEW: Onde está o scratchpad
+    
+    // NEW: CUDA context (se disponível)
+    void* cuda_context;     // NULL se não usar CUDA
 } q_context;
 ```
 
@@ -121,38 +140,68 @@ O Cursor deve seguir estritamente esta lógica de alocação.
 
 ### Scratchpad (Transient):
 - **Alocação:** `aligned_alloc` único na inicialização (ex: 512MB).
+  - **CPU:** `aligned_alloc` (como antes)
+  - **CUDA:** `cudaMalloc` (zero-malloc mantido no hot path)
 - **Uso:** Ativações intermediárias (saída de MatMul, Softmax).
 - **Ciclo:** `scratch_head` é resetado para 0 no início de cada token gerado.
 - **Regra:** NUNCA dar `free()` em tensores individuais aqui.
+
+### Adaptação para CUDA (FASE 2.7 - Planejamento):
+
+**Estratégia de Memória GPU:**
+- **Weights:** Transferir do mmap para GPU na inicialização (uma vez)
+- **KV Cache:** Pode ficar em GPU ou CPU (configurável)
+- **Scratchpad:** Usar `cudaMalloc` normal (zero-malloc mantido)
+- **Pinned Memory:** Apenas para buffers persistentes (Tier 2), não no hot path
+
+**Problema do mmap no Google Drive:**
+- Google Drive usa fuse filesystem (muito lento para mmap)
+- **Solução:** Detectar fuse e copiar modelo para `/tmp` antes de mmap
+- Implementado em `q_init_memory_smart()` (FASE 2.7)
 
 ---
 
 ## 4. ROTEIRO DE IMPLEMENTAÇÃO (Step-by-Step)
 
-Peça ao Cursor para executar uma fase por vez. Não avance sem validar.
+**ORDEM CORRETA DE IMPLEMENTAÇÃO:** Execute as fases nesta ordem exata. Não avance sem validar critérios objetivos.
+
+---
 
 ### ✅ FASE 1: Infraestrutura & Conversor (A Base) - **COMPLETA**
 
 **Objetivo:** Conseguir carregar pesos do disco sem parsing.
 
+**Implementação:**
 - ✅ **Passo 1.1 (Python):** `tools/convert_llama.py` criado. Gera arquivo `.qorus` com header fixo e tensores alinhados a 64 bytes.
-
 - ✅ **Passo 1.2 (C):** `src/core/memory.c` implementado (mmap, arena). `src/core/tensor.c` implementado (criação de views).
-
 - ✅ **Validação:** Testes de memória validados. Carregamento de modelo dummy funcionando.
 
-### ✅ FASE 2: Kernels Matemáticos (O Motor) - **COMPLETA**
+**Critérios Objetivos de Qualidade (FASE 1):**
+- ✅ **Testes:** 100% pass rate em todos os testes de memória e tensor
+- ✅ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path (apenas inicialização)
+- ✅ **Alinhamento:** Todos os buffers alinhados a 64 bytes (verificado com `_Static_assert`)
+- ✅ **Validação:** Modelo dummy carregado e validado com sucesso
+- ✅ **Sanitizers:** AddressSanitizer e MemorySanitizer passam sem erros
 
-**Objetivo:** Operações vetoriais rápidas.
+**Checkpoint de Refatoração (Após FASE 1):**
+- ✅ **Status:** Concluído
+- ✅ **Áreas Verificadas:**
+  - Consistência de alinhamento de memória
+  - Padronização de tratamento de erros em `memory.c`
+  - Validação de mmap e arena allocation
+- ✅ **Métricas:** Zero regressões de performance, todos os testes passando
 
+---
+
+### ✅ FASE 2: Kernels Matemáticos Básicos (O Motor) - **COMPLETA**
+
+**Objetivo:** Operações vetoriais rápidas com validação robusta.
+
+**Implementação:**
 - ✅ **Passo 2.1:** `src/ops/avx2/dequantize.c` implementado. Q4_0 → 32 floats em YMM, FMA-optimized.
-
 - ✅ **Passo 2.2:** `src/ops/avx2/matmul.c` implementado. GEMV Q4_F32 com dequantização fundida, 4x unrolling.
-
 - ✅ **Passo 2.3:** `src/ops/avx2/rope.c` e `src/ops/avx2/rmsnorm.c` implementados.
-
 - ✅ **Passo 2.4:** `src/ops/avx2/silu.c` e `src/ops/avx2/softmax.c` implementados. Utilitários matemáticos em `avx_math.h`.
-
 - ✅ **Passo 2.5:** **Segurança Implementada** - Todas as funções matemáticas agora retornam `q_error_code` e validam inputs em Release mode:
   - Validação de ponteiros nulos
   - Validação de aliasing (input == output)
@@ -162,7 +211,24 @@ Peça ao Cursor para executar uma fase por vez. Não avance sem validar.
   - Validação de dimensões (múltiplos de 8/32)
   - Macros de validação otimizadas com `__builtin_expect` para overhead mínimo
 
-- ✅ **Validação:** Todos os kernels testados e validados contra referências NumPy. Testes atualizados para verificar retornos de erro.
+**Critérios Objetivos de Qualidade (FASE 2):**
+- ✅ **Testes:** 100% pass rate em todos os testes de kernel
+- ✅ **Precisão Numérica:** Max absolute difference < 1e-5, Max relative difference < 1e-4 (FP32)
+- ✅ **Validação:** Todos os kernels validados contra referências NumPy/PyTorch
+- ✅ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path
+- ✅ **Performance:** Benchmarks mantidos ou melhorados vs referência
+- ✅ **Sanitizers:** AddressSanitizer, MemorySanitizer, UndefinedBehaviorSanitizer passam
+- ✅ **Validação de Erros:** Todos os códigos de erro testados e documentados
+
+**Checkpoint de Refatoração (Após FASE 2):**
+- ✅ **Status:** Concluído
+- ✅ **Áreas Verificadas:**
+  - Consistência de interface de kernels (assinaturas padronizadas)
+  - Tratamento de erros consistente (`q_error_code` em todas as funções)
+  - Padrões de otimização AVX2 verificados
+- ✅ **Métricas:** Zero regressões, performance mantida, todos os testes passando
+
+---
 
 ### ✅ FASE 2.5: Kernels Adicionais (MetaIA Portation) - **COMPLETA**
 
@@ -171,7 +237,6 @@ Peça ao Cursor para executar uma fase por vez. Não avance sem validar.
 **Status:** ✅ **COMPLETA** (2025-12-31). Todos os kernels implementados, testados e validados.
 
 **Kernels Implementados:**
-
 - ✅ **MatMul FP32 AVX2** (`q_matmul_f32_avx2`)
   - **Arquivo:** `src/ops/avx2/matmul_fp32.c`
   - **Testes:** `tests/test_matmul_f32.c`
@@ -217,30 +282,37 @@ Peça ao Cursor para executar uma fase por vez. Não avance sem validar.
     - AVX2 vectorized multiplication
     - In-place operation support
 
-**Validação Completa:**
-- ✅ Todos os testes passam (Release + Debug with sanitizers)
-- ✅ Code review completado (First Principles Thinking + CoT)
-- ✅ Edge cases tratados (NULL inputs, shape mismatches, alignment)
-- ✅ Operações in-place suportadas (safe aliasing)
-- ✅ Validação de precisão (max diff < 1e-5 para FP32)
-- ✅ Validação de memória (AddressSanitizer clean)
+**Critérios Objetivos de Qualidade (FASE 2.5):**
+- ✅ **Testes:** 100% pass rate (Release + Debug with sanitizers)
+- ✅ **Precisão Numérica:** Max absolute difference < 1e-5, Max relative difference < 1e-4 (FP32)
+- ✅ **Code Review:** Completado (First Principles Thinking + CoT)
+- ✅ **Edge Cases:** Tratados (NULL inputs, shape mismatches, alignment)
+- ✅ **Operações In-Place:** Suportadas (safe aliasing)
+- ✅ **Validação de Precisão:** Max diff < 1e-5 para FP32
+- ✅ **Validação de Memória:** AddressSanitizer clean
+- ✅ **Validação:** Todos os kernels validados contra referências NumPy
 
-**Adaptações Arquiteturais Aplicadas (MetaIA → New-QorusIA):**
-- ✅ `t_tensor` → `q_tensor` (field mapping)
-- ✅ `int` return → `q_error_code` enum
-- ✅ `malloc` → `q_arena_alloc` (zero-malloc guarantee)
-- ✅ `#ifdef DEBUG` → Always-active validation
-- ✅ `tensor_*` → `q_*` naming
+**Checkpoint de Refatoração (Após FASE 2.5):**
+- ✅ **Status:** Concluído
+- ✅ **Áreas Verificadas:**
+  - Consistência de interface de kernels (assinaturas padronizadas)
+  - Padronização de tratamento de erros
+  - Otimização de performance AVX2 verificada
+  - Cobertura de testes completa
+- ✅ **Métricas:** Zero regressões, performance mantida ou melhorada, todos os testes passando
 
 **Documentação:**
 - `docs/KERNEL_PORTATION_PLAN.md` - Plano completo seguindo MFR + CoT + Mathematical Proof + TDD (Status: ✅ COMPLETA)
 - `docs/KERNEL_IMPLEMENTATION_DETAILS.md` - Guia de implementação com código completo
 - `docs/PLANNING_SUMMARY.md` - Resumo executivo do planejamento
 
+---
+
 ### ✅ Dívida Técnica de Baixa Prioridade - **COMPLETA**
 
 **Objetivo:** Estabelecer base sólida de testes, benchmarking e documentação antes de avançar para forward pass.
 
+**Implementação:**
 - ✅ **Testes de Utilitários:**
   - `test_utils.c` - 23 testes para `q_strerror()` (validação O(1), todos os códigos de erro)
   - `test_avx_math.c` - 13 testes para utilitários AVX (`exp_approx_avx`, `horizontal_sum_avx`, `horizontal_max_avx`)
@@ -257,10 +329,18 @@ Peça ao Cursor para executar uma fase por vez. Não avance sem validar.
   - `tools/analyze_assembly.sh` - Script automatizado para análise de assembly
   - `docs/PRECISION_STANDARDS.md` - Atualizado com justificativas técnicas das tolerâncias
 
+**Critérios Objetivos de Qualidade:**
+- ✅ **Cobertura de Testes:** Todos os utilitários testados (100% pass rate)
+- ✅ **Benchmarks:** Ferramenta funcional e validada
+- ✅ **Documentação:** Análise assintótica completa para todas as funções críticas
+
+---
+
 ### ✅ FASE 3: Model Graph Building (O Corpo) - **PARCIALMENTE COMPLETA**
 
 **Objetivo:** Conectar os kernels na ordem correta usando framework genérico.
 
+**Implementação:**
 - ✅ **Passo 3.1:** Definir estruturas genéricas em `qorus_types.h`.  
   **Status:** Estruturas definidas e validadas com `_Static_assert`.
 
@@ -289,113 +369,51 @@ Peça ao Cursor para executar uma fase por vez. Não avance sem validar.
     - ✅ Token embedding lookup implementado
     - ✅ Validações de segurança implementadas
     - ✅ Estrutura `q_llama_layer` definida e integrada
-  **Testes:** ✅ Todos passando (14 testes, 100% pass rate)
+    - ✅ Correção de alinhamento em softmax (buffers alinhados para cada linha)
+    - ✅ Debug aprimorado em validações de alinhamento (`Q_VALIDATE_ALIGNED_OR_RETURN`)
+  **Testes:** ✅ Todos passando (14 testes unitários + 19 testes adversariais, 100% pass rate)
     - ✅ Forward pass básico (single token, multiple tokens)
     - ✅ Geração incremental (pos > 0)
     - ✅ Validação de logits (finite, shape correto)
     - ✅ Tratamento de erros (NULL pointers, invalid sizes, invalid positions)
+    - ✅ Testes adversariais completos (19 testes, 100% pass rate):
+      - ✅ NULL pointer attacks
+      - ✅ Edge cases (empty sequences, invalid token IDs)
+      - ✅ Memory safety (buffer overflows, double-free)
+      - ✅ Large sequences (seq_len = 100)
+      - ✅ Misaligned memory attacks
+      - ✅ Corrupted model data
+      - ✅ Numerical stability attacks
+
+**Critérios Objetivos de Qualidade (FASE 3.3):**
+- ✅ **Testes:** 100% pass rate (14 testes unitários + 19 testes adversariais)
+- ✅ **Validação:** Forward pass completo validado end-to-end
+- ✅ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path (apenas arena)
+- ✅ **Validação de Erros:** Todos os códigos de erro testados e documentados
+- ✅ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+- ✅ **Alinhamento:** Todos os buffers alinhados a 32 bytes (verificado)
+- ✅ **Performance:** Benchmarks mantidos ou melhorados
+
+**Checkpoint de Refatoração (Após FASE 3.3):**
+- ✅ **Status:** Concluído
+- ✅ **Áreas Verificadas:**
+  - Arquitetura do forward pass revisada
+  - Integração de layers padronizada
+  - Performance do forward pass otimizada
+  - Tratamento de erros melhorado
+  - Testes de forward pass completos
+- ✅ **Métricas:** Zero regressões, performance mantida, todos os testes passando
+- ✅ **Limite de Tempo:** 1-2 dias (concluído)
 
 **Nota:** Framework genérico permite qualquer arquitetura, não apenas Transformers.
 
-### ⏳ FASE 2.6: Training Kernels (Planejamento Completo) - **PLANEJAMENTO COMPLETO**
-
-**Objetivo:** Adicionar capacidade de treinamento para future-implementations (Code Agent, Customer Behavior Prediction, SEO AI Specialist).
-
-**Status:** 📋 Planejamento completo (2024-12-30). Pronto para implementação.
-
-**Componentes Planejados:**
-
-- ⏳ **Optimizers** (`src/optim/`)
-  - **Arquivo:** `src/optim/optimizer.c`, `src/optim/adam.c`
-  - **Uso:** Atualização de pesos durante treinamento (Adam, AdamW)
-  - **Tempo Estimado:** 8-12 horas
-  - **Características:**
-    - AVX2-optimized weight updates
-    - Arena-based state allocation (zero-malloc)
-    - Support for SGD, Adam, AdamW
-
-- ⏳ **Loss Functions** (`src/ops/avx2/`)
-  - **Arquivos:** `src/ops/avx2/loss_mse.c`, `src/ops/avx2/loss_crossentropy.c`
-  - **Uso:** Cálculo de loss e gradientes para backward pass
-  - **Tempo Estimado:** 4-6 horas
-  - **Características:**
-    - AVX2-optimized loss computation
-    - Gradient computation for backward pass
-
-- ⏳ **Gradient Clipping** (`src/ops/avx2/`)
-  - **Arquivo:** `src/ops/avx2/clip.c`
-  - **Uso:** Estabilização de gradientes durante treinamento
-  - **Tempo Estimado:** 2-3 horas
-  - **Características:**
-    - AVX2-optimized clipping
-    - In-place operation
-
-**Total Estimado (FASE 2.6):** 14-21 horas
-
-**Documentação de Planejamento:**
-- `docs/TRAINING_CAPABILITY_PLAN.md` - Plano completo de capacidade de treinamento
-
-### ⏳ FASE 3.4: Backward Pass (Training) - **PLANEJAMENTO COMPLETO**
-
-**Objetivo:** Implementar backward pass para propagação de gradientes.
-
-**Status:** 📋 Planejamento completo (2024-12-30). Bloqueado por FASE 2.6.
-
-**Componentes Planejados:**
-
-- ⏳ **Backward Infrastructure** (`src/core/model.c`)
-  - **Função:** `q_model_backward()`
-  - **Uso:** Propagação de gradientes através das camadas (genérico)
-  - **Tempo Estimado:** 6-8 horas
-  - **Características:**
-    - Forward cache management
-    - Gradient propagation framework
-    - Funciona com qualquer arquitetura
-
-- ⏳ **Layer Backward Implementations**
-  - **Attention Backward:** Q/K/V gradients, GQA-aware
-  - **MLP Backward:** SwiGLU backward, down projection gradient
-  - **RMSNorm Backward:** Weight gradient, input gradient
-  - **Residual Backward:** Gradient pass-through
-  - **Tempo Estimado:** 12-16 horas
-
-**Total Estimado (FASE 3.4):** 18-24 horas
-
-**Dependências:** FASE 2.6 (Optimizers, Loss Functions, Gradient Clipping)
-
-### ⏳ FASE 3.5: Training Loop (Training) - **PLANEJAMENTO COMPLETO**
-
-**Objetivo:** Implementar loop de treinamento completo.
-
-**Status:** 📋 Planejamento completo (2024-12-30). Bloqueado por FASE 3.4.
-
-**Componentes Planejados:**
-
-- ⏳ **Training Loop** (`src/core/model.c`)
-  - **Função:** `q_model_train()`
-  - **Uso:** Loop completo de treinamento (epochs, mini-batches) - genérico
-  - **Tempo Estimado:** 6-8 horas
-  - **Características:**
-    - Mini-batch shuffling (Fisher-Yates)
-    - Forward → Loss → Backward → Optimizer Step → Zero Grad
-    - Gradient clipping integration
-    - Early stopping support
-    - Funciona com qualquer arquitetura
-
-- ⏳ **Training Utilities**
-  - Learning rate scheduling
-  - Training metrics tracking
-  - Checkpoint saving
-  - **Tempo Estimado:** 4-6 horas
-
-**Total Estimado (FASE 3.5):** 10-14 horas
-
-**Dependências:** FASE 3.4 (Backward Pass)
+---
 
 ### ✅ FASE 4: Tokenizer & Loop (A Vida) - **PARCIALMENTE COMPLETA**
 
 **Objetivo:** Texto entra, texto sai.
 
+**Implementação:**
 - ✅ **Passo 4.1:** Implementar `src/tokenizer/bpe.c`. Carregar `tokenizer.bin` (extraído do modelo original).
   - **Status:** ✅ **COMPLETA** (2025-01-02)
   - **Arquivos Implementados:**
@@ -457,11 +475,368 @@ Peça ao Cursor para executar uma fase por vez. Não avance sem validar.
     - Suporte a prompts interativos
     - Tratamento de erros robusto (verificar `q_error_code` em todas as chamadas)
     - Integração com tokenizer (FASE 4.1 completa)
-    - Integração com forward pass (FASE 3.3 parcialmente completa)
+    - Integração com forward pass (FASE 3.3 completa)
   - **Dependências:** 
     - ✅ FASE 4.1 (Tokenizer) - COMPLETA
-    - ⏳ FASE 3.3 (Forward Pass) - Em progresso (attention forward pass e LM Head pendentes)
+    - ✅ FASE 3.3 (Forward Pass) - COMPLETA
   - **Nota:** Todas as chamadas de funções matemáticas devem verificar retorno `q_error_code`.
+
+**Critérios Objetivos de Qualidade (FASE 4.1):**
+- ✅ **Testes:** 100% pass rate (Release + Debug com sanitizers)
+- ✅ **Validação:** Tokenizer validado end-to-end (encode/decode round-trip)
+- ✅ **Validação de Erros:** Todos os códigos de erro testados
+- ✅ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+- ✅ **Exemplo Funcional:** Hello World funcionando corretamente
+
+**Critérios Objetivos de Qualidade (FASE 4.2 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em testes de main loop
+- ⏳ **Validação:** Loop de geração validado end-to-end
+- ⏳ **Validação de Erros:** Todos os códigos de erro tratados corretamente
+- ⏳ **Performance:** Latência de geração medida e documentada
+- ⏳ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+
+**Checkpoint de Refatoração (Após FASE 4.2 - Pendente):**
+- ⏳ **Status:** Pendente (aguardando conclusão de FASE 4.2)
+- ⏳ **Áreas a Verificar:**
+  - Arquitetura do main loop
+  - Integração tokenizer + forward pass
+  - Tratamento de erros robusto
+  - Performance do loop de geração
+- ⏳ **Limite de Tempo:** 1 dia
+
+---
+
+### ⏳ FASE 2.6: Training Kernels (Planejamento Completo) - **PLANEJAMENTO COMPLETO**
+
+**Objetivo:** Adicionar capacidade de treinamento para future-implementations (Code Agent, Customer Behavior Prediction, SEO AI Specialist).
+
+**Status:** 📋 Planejamento completo (2024-12-30). Pronto para implementação após FASE 4.2.
+
+**Componentes Planejados:**
+
+- ⏳ **Optimizers** (`src/optim/`)
+  - **Arquivo:** `src/optim/optimizer.c`, `src/optim/adam.c`
+  - **Uso:** Atualização de pesos durante treinamento (Adam, AdamW)
+  - **Tempo Estimado:** 8-12 horas
+  - **Características:**
+    - AVX2-optimized weight updates
+    - Arena-based state allocation (zero-malloc)
+    - Support for SGD, Adam, AdamW
+
+- ⏳ **Loss Functions** (`src/ops/avx2/`)
+  - **Arquivos:** `src/ops/avx2/loss_mse.c`, `src/ops/avx2/loss_crossentropy.c`
+  - **Uso:** Cálculo de loss e gradientes para backward pass
+  - **Tempo Estimado:** 4-6 horas
+  - **Características:**
+    - AVX2-optimized loss computation
+    - Gradient computation for backward pass
+
+- ⏳ **Gradient Clipping** (`src/ops/avx2/`)
+  - **Arquivo:** `src/ops/avx2/clip.c`
+  - **Uso:** Estabilização de gradientes durante treinamento
+  - **Tempo Estimado:** 2-3 horas
+  - **Características:**
+    - AVX2-optimized clipping
+    - In-place operation
+
+**Total Estimado (FASE 2.6):** 14-21 horas
+
+**Critérios Objetivos de Qualidade (FASE 2.6 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em todos os testes de optimizer e loss functions
+- ⏳ **Precisão Numérica:** Max absolute difference < 1e-5, Max relative difference < 1e-4 (FP32)
+- ⏳ **Validação:** Todos os optimizers validados contra referências PyTorch
+- ⏳ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path (apenas arena)
+- ⏳ **Performance:** Benchmarks mantidos ou melhorados
+- ⏳ **Sanitizers:** AddressSanitizer, MemorySanitizer, UndefinedBehaviorSanitizer passam
+
+**Checkpoint de Refatoração (Após FASE 2.6 - Pendente):**
+- ⏳ **Status:** Pendente
+- ⏳ **Áreas a Verificar:**
+  - Consistência de interface de optimizers
+  - Padronização de tratamento de erros
+  - Otimização de performance AVX2
+  - Cobertura de testes completa
+- ⏳ **Limite de Tempo:** 1 dia
+
+**Documentação de Planejamento:**
+- `docs/TRAINING_CAPABILITY_PLAN.md` - Plano completo de capacidade de treinamento
+
+---
+
+### ⏳ FASE 2.7: CUDA Support (Google Colab / GPU) - **PLANEJAMENTO COMPLETO**
+
+**Objetivo:** Adicionar suporte CUDA para treinamento acelerado em GPU (Google Colab, NVIDIA GPUs).
+
+**Status:** 📋 Planejamento completo (2025-01-02). Pronto para implementação após abstrações necessárias.
+
+**Análise Crítica Aplicada:**
+- ✅ **Problema Identificado:** Falta de abstração de device em `q_tensor`
+- ✅ **Problema Identificado:** Conflito potencial com Zero-Malloc no hot path
+- ✅ **Problema Identificado:** Estrutura de diretórios incompleta para seleção de kernel
+- ✅ **Solução Proposta:** Abstração de device + gerenciamento unificado de memória
+
+**Componentes Planejados:**
+
+- ⏳ **Abstração de Device** (`include/qorus_types.h`)
+  - **Estrutura:** `q_device_type` enum (CPU, CUDA)
+  - **Tempo Estimado:** 2-3 horas
+  - **Características:**
+    - Adicionar campo `device` em `q_tensor`
+    - Adicionar campos `kv_device` e `scratch_device` em `q_context`
+    - Adicionar campo `cuda_context` em `q_context`
+
+- ⏳ **Gerenciamento de Memória Unificado** (`src/core/memory.c`)
+  - **Funções:** `q_alloc_kv_cache_ex()`, `q_alloc_arena_ex()` com suporte a device
+  - **Tempo Estimado:** 4-6 horas
+  - **Características:**
+    - CPU: `aligned_alloc` (como antes)
+    - CUDA: `cudaMalloc` (zero-malloc mantido no hot path)
+    - Pinned memory apenas para buffers persistentes (Tier 2: KV Cache)
+    - Scratchpad usa `cudaMalloc` normal (zero-malloc mantido)
+
+- ⏳ **Interface Comum com Seleção Automática** (`src/ops/`)
+  - **Funções:** `q_matmul_f32()`, `q_add_f32()`, etc. (wrapper que seleciona kernel)
+  - **Tempo Estimado:** 6-8 horas
+  - **Características:**
+    - Interface pública permanece a mesma (`qorus.h`)
+    - Seleção automática de kernel baseada em `device` do tensor
+    - Fallback para CPU se CUDA não disponível
+
+- ⏳ **Kernels CUDA** (`src/ops/cuda/`)
+  - **Arquivos:** `q_cuda_utils.cu`, `matmul.cu`, `rope.cu`, etc.
+  - **Tempo Estimado:** 20-30 horas
+  - **Características:**
+    - CUDA kernels para operações críticas
+    - Integração com cuBLAS para MatMul
+    - Custom kernels para RoPE, RMSNorm, etc.
+
+- ⏳ **Resolução do Problema do mmap no Google Drive** (`src/core/memory.c`)
+  - **Função:** `q_init_memory_smart()` com detecção de fuse filesystem
+  - **Tempo Estimado:** 2-3 horas
+  - **Características:**
+    - Detecta Google Drive (fuse filesystem)
+    - Copia modelo para `/tmp` antes de mmap
+    - Mantém compatibilidade com sistemas normais
+
+**Total Estimado (FASE 2.7):** 34-50 horas
+
+**Dependências:**
+- ✅ FASE 3.3 (Forward Pass) - COMPLETA (necessária para testar kernels CUDA)
+- ⏳ Abstrações de device (pré-requisito)
+
+**Critérios Objetivos de Qualidade (FASE 2.7 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em todos os testes CUDA
+- ⏳ **Precisão Numérica:** Max absolute difference < 1e-5, Max relative difference < 1e-4 (FP32)
+- ⏳ **Validação:** Todos os kernels CUDA validados contra referências CPU
+- ⏳ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path (apenas `cudaMalloc` na inicialização)
+- ⏳ **Performance:** Speedup medido vs CPU (objetivo: >2x para operações grandes)
+- ⏳ **Compatibilidade:** Código CPU existente continua funcionando sem mudanças
+- ⏳ **Sanitizers:** CUDA-Memcheck passa sem erros
+
+**Checkpoint de Refatoração (Após FASE 2.7 - Pendente):**
+- ⏳ **Status:** Pendente
+- ⏳ **Áreas a Verificar:**
+  - Abstração de device funcionando corretamente
+  - Seleção automática de kernel validada
+  - Gerenciamento de memória GPU otimizado
+  - Compatibilidade CPU mantida
+- ⏳ **Limite de Tempo:** 1-2 dias
+
+**Documentação de Planejamento:**
+- `docs/CUDA_ADAPTATION_PLAN.md` - Plano completo de adaptação CUDA (a ser criado)
+
+**Análise Crítica Completa (First Principles Thinking + CoT):**
+
+**Problemas Identificados e Soluções:**
+
+1. **Falta de Abstração de Device:**
+   - **Problema:** `q_tensor` não distingue entre CPU e GPU, causando crashes se ponteiro GPU for passado para kernel AVX2
+   - **Solução:** Adicionar campo `q_device_type device` em `q_tensor`
+   - **Impacto:** Permite seleção automática de kernel baseada em device
+   - **Prova:** Se `q_tensor.data` aponta para GPU mas kernel AVX2 é chamado → CRASH. Com `device`, seleção automática previne isso.
+
+2. **Conflito com Zero-Malloc:**
+   - **Problema:** `cudaHostAlloc` quebra zero-malloc no hot path (é alocação)
+   - **Solução:** Usar `cudaMalloc` normal no hot path, `cudaHostAlloc` apenas para buffers persistentes (Tier 2: KV Cache)
+   - **Impacto:** Mantém garantia zero-malloc mesmo com CUDA
+   - **Prova:** Zero-malloc = zero alocações no hot path. `cudaMalloc` é alocação, mas apenas na inicialização (não no hot path). `cudaHostAlloc` seria alocação no hot path → quebra garantia.
+
+3. **Estrutura de Diretórios:**
+   - **Problema:** Falta abstração para seleção de kernel (runtime vs compile-time)
+   - **Solução:** Interface comum (`q_matmul_f32()`) que seleciona kernel automaticamente baseado em `device`
+   - **Impacto:** Código cliente não precisa mudar, seleção transparente
+   - **Prova:** Sem abstração, código cliente precisa saber qual kernel chamar → duplicação. Com abstração, uma função pública seleciona automaticamente.
+
+4. **Problema do mmap no Google Drive:**
+   - **Problema:** Fuse filesystem é muito lento para mmap (latência de milissegundos vs nanossegundos)
+   - **Solução:** Detectar fuse e copiar modelo para `/tmp` antes de mmap
+   - **Impacto:** Performance normal mesmo no Google Colab
+   - **Prova:** Fuse filesystem tem overhead de rede → mmap bloqueia. Copiar para `/tmp` (SSD local) → mmap rápido.
+
+**Estrutura de Implementação:**
+
+```c
+// Interface pública (não muda) - em qorus.h
+q_error_code q_matmul_f32(const q_tensor* A, const q_tensor* B, 
+                          const q_tensor* C, q_context* ctx);
+
+// Implementação interna seleciona kernel automaticamente - em src/ops/matmul.c
+q_error_code q_matmul_f32(const q_tensor* A, const q_tensor* B,
+                          const q_tensor* C, q_context* ctx) {
+    // Auto-select kernel based on device
+    if (A->device == Q_DEVICE_CUDA || B->device == Q_DEVICE_CUDA) {
+        return q_matmul_f32_cuda(A, B, C, ctx);
+    } else {
+        return q_matmul_f32_avx2(A, B, C, ctx);
+    }
+}
+```
+
+**Gerenciamento de Memória Unificado:**
+
+```c
+// Extensão do q_context para suportar GPU - em qorus_types.h
+typedef struct {
+    // Tier 1: Weights (Read-Only)
+    void* weights_mmap;       // CPU: mmap, GPU: NULL (pesos ficam em GPU)
+    size_t weights_size;
+    
+    // Tier 2: KV Cache (Persistent)
+    void* kv_buffer;          // CPU: aligned_alloc, GPU: cudaMalloc
+    size_t kv_size;
+    q_device_type kv_device;  // NEW: Onde está o KV cache
+    
+    // Tier 3: Scratchpad (Transient)
+    void* scratch_buffer;     // CPU: aligned_alloc, GPU: cudaMalloc
+    size_t scratch_size;
+    size_t scratch_head;
+    q_device_type scratch_device;  // NEW: Onde está o scratchpad
+    
+    // NEW: CUDA context (se disponível)
+    void* cuda_context;       // NULL se não usar CUDA
+} q_context;
+```
+
+**Resolução do Problema do mmap no Google Drive:**
+
+```c
+// Função helper para detectar e copiar se necessário - em src/core/memory.c
+q_error_code q_init_memory_smart(q_context* ctx, const char* model_path) {
+    // Detectar se é Google Drive (fuse filesystem)
+    struct statfs fs_info;
+    if (statfs(model_path, &fs_info) == 0) {
+        if (fs_info.f_type == 0x65735546) {  // FUSE magic number
+            // É fuse: copiar para /tmp primeiro
+            char tmp_path[PATH_MAX];
+            snprintf(tmp_path, sizeof(tmp_path), "/tmp/qorus_model_%d.bin", getpid());
+            // Copiar arquivo...
+            return q_init_memory(ctx, tmp_path);
+        }
+    }
+    // Não é fuse: usar diretamente
+    return q_init_memory(ctx, model_path);
+}
+```
+
+**Notas Importantes:**
+- **Zero-Malloc Mantido:** Usar `cudaMalloc` (não `cudaHostAlloc`) no hot path
+- **Compatibilidade:** Código CPU existente continua funcionando sem mudanças (device padrão = CPU)
+- **Performance:** Seleção de kernel em runtime tem overhead mínimo (< 1 ciclo, apenas comparação de enum)
+- **Abstração:** Interface pública não muda, seleção automática transparente
+
+---
+
+### ⏳ FASE 3.4: Backward Pass (Training) - **PLANEJAMENTO COMPLETO**
+
+**Objetivo:** Implementar backward pass para propagação de gradientes.
+
+**Status:** 📋 Planejamento completo (2024-12-30). Bloqueado por FASE 2.6.
+
+**Componentes Planejados:**
+
+- ⏳ **Backward Infrastructure** (`src/core/model.c`)
+  - **Função:** `q_model_backward()`
+  - **Uso:** Propagação de gradientes através das camadas (genérico)
+  - **Tempo Estimado:** 6-8 horas
+  - **Características:**
+    - Forward cache management
+    - Gradient propagation framework
+    - Funciona com qualquer arquitetura
+
+- ⏳ **Layer Backward Implementations**
+  - **Attention Backward:** Q/K/V gradients, GQA-aware
+  - **MLP Backward:** SwiGLU backward, down projection gradient
+  - **RMSNorm Backward:** Weight gradient, input gradient
+  - **Residual Backward:** Gradient pass-through
+  - **Tempo Estimado:** 12-16 horas
+
+**Total Estimado (FASE 3.4):** 18-24 horas
+
+**Dependências:** FASE 2.6 (Optimizers, Loss Functions, Gradient Clipping)
+
+**Critérios Objetivos de Qualidade (FASE 3.4 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em todos os testes de backward pass
+- ⏳ **Validação:** Gradientes validados contra referências PyTorch (gradient checking)
+- ⏳ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path (apenas arena)
+- ⏳ **Performance:** Benchmarks mantidos ou melhorados
+- ⏳ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+
+**Checkpoint de Refatoração (Após FASE 3.4 - Pendente):**
+- ⏳ **Status:** Pendente
+- ⏳ **Áreas a Verificar:**
+  - Arquitetura do backward pass
+  - Integração com forward cache
+  - Propagação de gradientes validada
+  - Performance do backward pass
+- ⏳ **Limite de Tempo:** 1-2 dias
+
+---
+
+### ⏳ FASE 3.5: Training Loop (Training) - **PLANEJAMENTO COMPLETO**
+
+**Objetivo:** Implementar loop de treinamento completo.
+
+**Status:** 📋 Planejamento completo (2024-12-30). Bloqueado por FASE 3.4.
+
+**Componentes Planejados:**
+
+- ⏳ **Training Loop** (`src/core/model.c`)
+  - **Função:** `q_model_train()`
+  - **Uso:** Loop completo de treinamento (epochs, mini-batches) - genérico
+  - **Tempo Estimado:** 6-8 horas
+  - **Características:**
+    - Mini-batch shuffling (Fisher-Yates)
+    - Forward → Loss → Backward → Optimizer Step → Zero Grad
+    - Gradient clipping integration
+    - Early stopping support
+    - Funciona com qualquer arquitetura
+
+- ⏳ **Training Utilities**
+  - Learning rate scheduling
+  - Training metrics tracking
+  - Checkpoint saving
+  - **Tempo Estimado:** 4-6 horas
+
+**Total Estimado (FASE 3.5):** 10-14 horas
+
+**Dependências:** FASE 3.4 (Backward Pass)
+
+**Critérios Objetivos de Qualidade (FASE 3.5 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em todos os testes de training loop
+- ⏳ **Validação:** Training loop validado end-to-end (converge em dataset pequeno)
+- ⏳ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path (apenas arena)
+- ⏳ **Performance:** Throughput de treinamento medido e documentado
+- ⏳ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+
+**Checkpoint de Refatoração (Após FASE 3.5 - Pendente):**
+- ⏳ **Status:** Pendente
+- ⏳ **Áreas a Verificar:**
+  - Arquitetura do training loop
+  - Integração de optimizer
+  - Integração de loss function
+  - Fluxo de gradientes
+  - Performance de treinamento
+- ⏳ **Limite de Tempo:** 1-2 dias
 
 ---
 
@@ -473,6 +848,8 @@ Transformar QorusIA de engine especializado em **framework genérico** sem limit
 - ✅ Performance máxima (zero-malloc, AVX2)
 - ✅ Arquitetura limpa (validações robustas)
 - ✅ Flexibilidade total (qualquer arquitetura)
+
+---
 
 ### ⏳ FASE 5.0: Core Abstraction (Framework Genérico) - **PLANEJAMENTO COMPLETO**
 
@@ -516,8 +893,26 @@ Transformar QorusIA de engine especializado em **framework genérico** sem limit
 
 **Total Estimado (FASE 5.0):** 20-28 horas
 
+**Critérios Objetivos de Qualidade (FASE 5.0 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em todos os testes de framework genérico
+- ⏳ **Validação:** Framework genérico validado com modelo Transformer
+- ⏳ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path (apenas arena)
+- ⏳ **Performance:** Overhead de function pointers < 1% (medido)
+- ⏳ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+
+**Checkpoint de Refatoração (Após FASE 5.0 - Pendente):**
+- ⏳ **Status:** Pendente
+- ⏳ **Áreas a Verificar:**
+  - Design de interface genérica
+  - Overhead de function pointers otimizado
+  - Interface de layer padronizada
+  - Zero overhead de performance verificado
+- ⏳ **Limite de Tempo:** 1-2 dias
+
 **Documentação de Planejamento:**
 - `docs/GENERIC_FRAMEWORK_PLAN.md` - Plano completo de framework genérico
+
+---
 
 ### ⏳ FASE 5.1: Basic Layers (Framework Genérico) - **PLANEJAMENTO COMPLETO**
 
@@ -557,6 +952,25 @@ Transformar QorusIA de engine especializado em **framework genérico** sem limit
     - AVX2 optimized
 
 **Total Estimado (FASE 5.1):** 18-25 horas
+
+**Critérios Objetivos de Qualidade (FASE 5.1 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em todos os testes de layers básicas
+- ⏳ **Precisão Numérica:** Max absolute difference < 1e-5, Max relative difference < 1e-4 (FP32)
+- ⏳ **Validação:** Todas as layers validadas contra referências PyTorch
+- ⏳ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path (apenas arena)
+- ⏳ **Performance:** Benchmarks mantidos ou melhorados
+- ⏳ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+
+**Checkpoint de Refatoração (Após FASE 5.1 - Pendente):**
+- ⏳ **Status:** Pendente
+- ⏳ **Áreas a Verificar:**
+  - Consistência de interface de layers
+  - Qualidade de implementação de layers
+  - Otimização de performance
+  - Cobertura de testes completa
+- ⏳ **Limite de Tempo:** 1 dia
+
+---
 
 ### ⏳ FASE 5.2: Advanced Layers (Framework Genérico) - **PLANEJAMENTO COMPLETO**
 
@@ -599,6 +1013,25 @@ Transformar QorusIA de engine especializado em **framework genérico** sem limit
 
 **Total Estimado (FASE 5.2):** 22-30 horas
 
+**Critérios Objetivos de Qualidade (FASE 5.2 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em todos os testes de layers avançadas
+- ⏳ **Precisão Numérica:** Max absolute difference < 1e-5, Max relative difference < 1e-4 (FP32)
+- ⏳ **Validação:** Todas as layers validadas contra referências PyTorch
+- ⏳ **Zero-Malloc:** Nenhuma alocação dinâmica no hot path (apenas arena)
+- ⏳ **Performance:** Benchmarks mantidos ou melhorados
+- ⏳ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+
+**Checkpoint de Refatoração (Após FASE 5.2 - Pendente):**
+- ⏳ **Status:** Pendente
+- ⏳ **Áreas a Verificar:**
+  - Arquitetura de layers avançadas
+  - Composição de layers
+  - Otimização de performance
+  - Testes de layers complexas
+- ⏳ **Limite de Tempo:** 1-2 dias
+
+---
+
 ### ⏳ FASE 5.3: Example Model Builders (Framework Genérico) - **PLANEJAMENTO COMPLETO**
 
 **Objetivo:** Criar exemplos de modelos usando framework genérico.
@@ -633,6 +1066,23 @@ Transformar QorusIA de engine especializado em **framework genérico** sem limit
 
 **Dependências:** FASE 5.0 (Core Abstraction), FASE 5.1 (Basic Layers), FASE 5.2 (Advanced Layers)
 
+**Critérios Objetivos de Qualidade (FASE 5.3 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em todos os testes de exemplo
+- ⏳ **Validação:** Modelos exemplo validados end-to-end
+- ⏳ **Documentação:** Exemplos de uso completos e funcionais
+- ⏳ **Performance:** Benchmarks mantidos ou melhorados
+
+**Checkpoint de Refatoração (Após FASE 5.3 - Pendente):**
+- ⏳ **Status:** Pendente
+- ⏳ **Áreas a Verificar:**
+  - Completude de migração
+  - Compatibilidade reversa
+  - Validação de performance
+  - Limpeza de código
+- ⏳ **Limite de Tempo:** 1 dia
+
+---
+
 ### ⏳ FASE 5.4: Additional Architectures (Framework Genérico) - **FUTURO**
 
 **Objetivo:** Suportar arquiteturas adicionais usando framework genérico.
@@ -652,6 +1102,20 @@ Transformar QorusIA de engine especializado em **framework genérico** sem limit
   - RNN layer
   - LSTM layer
   - Modelos de sequência
+
+**Critérios Objetivos de Qualidade (FASE 5.4 - Pendente):**
+- ⏳ **Testes:** 100% pass rate em todos os testes de arquiteturas adicionais
+- ⏳ **Validação:** Arquiteturas adicionais validadas end-to-end
+- ⏳ **Documentação:** Exemplos de uso completos
+
+**Checkpoint de Refatoração (Após FASE 5.4 - Pendente):**
+- ⏳ **Status:** Pendente
+- ⏳ **Áreas a Verificar:**
+  - Prontidão para produção
+  - Revisão final de qualidade de código
+  - Validação final de performance
+  - Completude de documentação
+- ⏳ **Limite de Tempo:** 2 dias
 
 ---
 
@@ -681,6 +1145,8 @@ Cole isso no prompt do Cursor para garantir qualidade:
 - **Strict C11:** Use C11 padrão. Sem extensões GNU a menos que estritamente necessário para AVX.
 
 - **No Mallocs:** Proibido usar `malloc` ou `free` dentro de `src/ops` ou `src/models`. Use a API da Arena.
+  - **CUDA:** Usar `cudaMalloc` (não `cudaHostAlloc`) no hot path para manter zero-malloc
+  - **Pinned Memory:** Apenas para buffers persistentes (Tier 2), não no hot path
 
 - **Restrict Pointers:** Use `float *restrict a` em kernels matemáticos para permitir otimizações agressivas do compilador.
 
@@ -705,8 +1171,20 @@ Todas as funções matemáticas implementam validações críticas que estão **
 - ✅ **Validação de Aliasing:** Previne corrupção de dados (input == output)
 - ✅ **Validação de Overflow:** Previne wraparound em cálculos de índices
 - ✅ **Validação de Alinhamento:** Previne crashes em instruções AVX2
+  - ✅ Debug detalhado em `Q_VALIDATE_ALIGNED_OR_RETURN` para diagnóstico de problemas de alinhamento
+  - ✅ Correção de alinhamento em softmax (buffers alinhados para cada linha)
 - ✅ **Validação de Tipo:** Previne uso incorreto de dados quantizados
 - ✅ **Validação de Dimensões:** Previne acesso fora dos limites
+
+### Testes Adversariais
+
+**Status:** ✅ **COMPLETO** (2025-01-02)
+
+Testes adversariais completos implementados para validar robustez do código:
+- ✅ **19 testes adversariais** para `llama_forward()` (100% pass rate)
+- ✅ **24 testes adversariais** para tokenizer (100% pass rate)
+- ✅ Cobertura completa: NULL pointers, edge cases, memory safety, large sequences, misaligned memory, corrupted data, numerical stability
+- ✅ Metodologia Lead SDET: Scenario Map, Acceptance Criteria, Blinded Implementation (AAA pattern)
 
 ### Macros de Validação
 
@@ -796,372 +1274,20 @@ if (__builtin_expect(block == NULL || output == NULL, 0)) {
 
 ---
 
-## 7.5. CHECKPOINTS DE REFATORAÇÃO
-
-### Objetivo
-
-**Prevenir acúmulo de dívida técnica** através de refatoração sistemática em checkpoints estratégicos entre fases, garantindo:
-- Qualidade de código mantida
-- Arquitetura limpa preservada
-- Performance mantida
-- Dívida técnica minimizada
-- Retrabalho reduzido
-
-**Princípio Chave:** Refatorar incrementalmente, não reativamente.
-
-### Quando Refatorar
-
-#### Checkpoints Obrigatórios (Após Cada Fase)
-- **Após FASE 2.5:** Refatorar consistência de interface de kernels
-- **Após FASE 3.3:** Refatorar arquitetura do forward pass
-- **Após FASE 3.5:** Refatorar arquitetura do training loop
-- **Após FASE 5.0:** Refatorar design da abstração core
-- **Após FASE 5.1:** Refatorar consistência de interface de layers
-- **Após FASE 5.2:** Refatorar arquitetura de layers avançadas
-- **Após FASE 5.3:** Refatorar estratégia de migração de arquitetura
-- **Após FASE 5.4:** Refatoração final antes de produção
-
-#### Checkpoints Opcionais (Durante Desenvolvimento)
-- Quando duplicação de código é detectada
-- Quando performance degrada inesperadamente
-- Quando arquitetura fica confusa
-- Quando testes ficam difíceis de manter
-
-### Procedimento de Checkpoint
-
-#### Fase 1: Avaliação (30 minutos)
-1. **Revisão de Código:**
-   - Revisar todo código adicionado na fase
-   - Identificar code smells (duplicação, complexidade, inconsistência)
-   - Verificar aderência a padrões de codificação
-   - Verificar consistência de tratamento de erros
-   - Verificar padrões de gerenciamento de memória
-
-2. **Revisão de Arquitetura:**
-   - Verificar separação de responsabilidades
-   - Verificar consistência de interfaces
-   - Revisar alinhamento de estruturas de dados
-   - Verificar convenções de nomenclatura
-   - Verificar completude de documentação
-
-3. **Revisão de Performance:**
-   - Executar benchmarks de performance
-   - Comparar com fase anterior
-   - Identificar regressões de performance
-   - Verificar padrões de uso de memória
-   - Verificar conformidade zero-malloc
-
-4. **Revisão de Testes:**
-   - Verificar cobertura de testes
-   - Verificar qualidade de testes
-   - Revisar organização de testes
-   - Verificar manutenibilidade de testes
-   - Verificar cobertura de testes adversariais
-
-#### Fase 2: Planejamento de Refatoração (30 minutos)
-1. **Identificar Alvos de Refatoração:**
-   - Listar code smells a corrigir
-   - Identificar melhorias arquiteturais
-   - Planejar padronização de interfaces
-   - Identificar otimizações de performance
-   - Planejar atualizações de documentação
-
-2. **Priorizar Tarefas de Refatoração:**
-   - Alta prioridade: Problemas críticos
-   - Média prioridade: Melhorias importantes
-   - Baixa prioridade: Melhorias desejáveis
-
-3. **Estimar Esforço de Refatoração:**
-   - Estimar tempo para cada tarefa
-   - Identificar dependências
-   - Planejar sequência de refatoração
-   - Definir limites de tempo (máx 1-2 dias por checkpoint)
-
-#### Fase 3: Execução de Refatoração (1-2 dias)
-1. **Refatoração de Código:**
-   - Remover duplicação de código
-   - Simplificar funções complexas
-   - Padronizar interfaces
-   - Melhorar tratamento de erros
-   - Otimizar uso de memória
-
-2. **Refatoração de Arquitetura:**
-   - Melhorar separação de responsabilidades
-   - Padronizar estruturas de dados
-   - Melhorar convenções de nomenclatura
-   - Melhorar modularidade
-   - Melhorar extensibilidade
-
-3. **Refatoração de Performance:**
-   - Otimizar hot paths
-   - Reduzir alocações de memória
-   - Melhorar localidade de cache
-   - Otimizar uso de SIMD
-   - Reduzir overhead de chamadas de função
-
-4. **Refatoração de Testes:**
-   - Melhorar organização de testes
-   - Adicionar casos de teste faltantes
-   - Melhorar legibilidade de testes
-   - Reduzir duplicação de testes
-   - Melhorar manutenibilidade de testes
-
-#### Fase 4: Validação (1-2 horas)
-1. **Validação de Código:**
-   - Executar todos os testes (devem passar)
-   - Executar benchmarks de performance (devem manter ou melhorar)
-   - Executar sanitizadores de memória (devem passar)
-   - Executar ferramentas de análise estática
-   - Verificar conformidade zero-malloc
-
-2. **Validação de Documentação:**
-   - Atualizar comentários de código
-   - Atualizar documentação de arquitetura
-   - Atualizar documentação de API
-   - Atualizar documentos de status
-   - Atualizar timeline se necessário
-
-3. **Validação de Qualidade:**
-   - Verificar métricas de qualidade de código
-   - Verificar cobertura de testes (deve manter ou melhorar)
-   - Verificar métricas de performance
-   - Verificar completude de documentação
-   - Verificar conclusão do checkpoint
-
-### Checklist de Checkpoint
-
-#### Após Conclusão de Cada Fase
-
-**Qualidade de Código:**
-- [ ] Sem duplicação de código
-- [ ] Funções são focadas e simples
-- [ ] Interfaces são consistentes
-- [ ] Tratamento de erros é padronizado
-- [ ] Gerenciamento de memória está correto
-
-**Qualidade de Arquitetura:**
-- [ ] Separação de responsabilidades está clara
-- [ ] Estruturas de dados estão bem projetadas
-- [ ] Convenções de nomenclatura são consistentes
-- [ ] Modularidade está mantida
-- [ ] Extensibilidade está preservada
-
-**Qualidade de Performance:**
-- [ ] Performance está mantida ou melhorada
-- [ ] Conformidade zero-malloc verificada
-- [ ] Localidade de cache otimizada
-- [ ] Uso de SIMD está otimizado
-- [ ] Sem regressões de performance
-
-**Qualidade de Testes:**
-- [ ] Cobertura de testes mantida ou melhorada
-- [ ] Testes estão bem organizados
-- [ ] Testes são manuteníveis
-- [ ] Testes adversariais são abrangentes
-- [ ] Todos os testes passam
-
-**Qualidade de Documentação:**
-- [ ] Comentários de código atualizados
-- [ ] Documentos de arquitetura atualizados
-- [ ] Documentos de API atualizados
-- [ ] Documentos de status atualizados
-- [ ] Timeline atualizada se necessário
-
-### Requisitos Específicos por Checkpoint
-
-#### Checkpoint: Após FASE 2.5 (Kernels de Inferência Adicionais)
-**Áreas de Foco:**
-- Consistência de interface de kernels
-- Padronização de tratamento de erros
-- Otimização de performance
-- Cobertura de testes
-
-**Tarefas Específicas:**
-- [ ] Padronizar assinaturas de funções de kernel
-- [ ] Garantir tratamento de erros consistente
-- [ ] Verificar padrões de otimização AVX2
-- [ ] Adicionar casos de teste faltantes
-- [ ] Atualizar documentação de kernels
-
-**Limite de Tempo:** 1 dia
-
-#### Checkpoint: Após FASE 3.3 (Forward Pass)
-**Áreas de Foco:**
-- Arquitetura do forward pass
-- Integração de layers
-- Otimização de performance
-- Propagação de erros
-
-**Tarefas Específicas:**
-- [ ] Revisar estrutura do forward pass
-- [ ] Padronizar integração de layers
-- [ ] Otimizar performance do forward pass
-- [ ] Melhorar tratamento de erros
-- [ ] Adicionar testes de forward pass
-
-**Limite de Tempo:** 1-2 dias
-
-#### Checkpoint: Após FASE 3.5 (Training Loop)
-**Áreas de Foco:**
-- Arquitetura do training loop
-- Integração de optimizer
-- Integração de loss function
-- Fluxo de gradientes
-
-**Tarefas Específicas:**
-- [ ] Revisar estrutura do training loop
-- [ ] Padronizar interface de optimizer
-- [ ] Otimizar performance de treinamento
-- [ ] Melhorar fluxo de gradientes
-- [ ] Adicionar testes de treinamento
-
-**Limite de Tempo:** 1-2 dias
-
-#### Checkpoint: Após FASE 5.0 (Core Abstraction)
-**Áreas de Foco:**
-- Interface genérica de layer
-- Design de container de modelo
-- Implementação de polimorfismo
-- Overhead de performance
-
-**Tarefas Específicas:**
-- [ ] Revisar design de interface genérica
-- [ ] Otimizar overhead de function pointers
-- [ ] Padronizar interface de layer
-- [ ] Verificar zero overhead de performance
-- [ ] Adicionar testes de framework
-
-**Limite de Tempo:** 1-2 dias
-
-#### Checkpoint: Após FASE 5.1 (Basic Layers)
-**Áreas de Foco:**
-- Consistência de interface de layers
-- Qualidade de implementação de layers
-- Otimização de performance
-- Cobertura de testes
-
-**Tarefas Específicas:**
-- [ ] Padronizar implementações de layers
-- [ ] Otimizar performance de layers
-- [ ] Melhorar tratamento de erros de layers
-- [ ] Adicionar testes de layers
-- [ ] Atualizar documentação de layers
-
-**Limite de Tempo:** 1 dia
-
-#### Checkpoint: Após FASE 5.2 (Advanced Layers)
-**Áreas de Foco:**
-- Arquitetura de layers avançadas
-- Composição de layers
-- Otimização de performance
-- Testes de layers complexas
-
-**Tarefas Específicas:**
-- [ ] Revisar design de layers avançadas
-- [ ] Otimizar composição de layers
-- [ ] Melhorar performance de layers complexas
-- [ ] Adicionar testes de layers avançadas
-- [ ] Atualizar documentação de layers avançadas
-
-**Limite de Tempo:** 1-2 dias
-
-#### Checkpoint: Após FASE 5.3 (Architecture Migration)
-**Áreas de Foco:**
-- Completude de migração
-- Compatibilidade reversa
-- Validação de performance
-- Limpeza de código
-
-**Tarefas Específicas:**
-- [ ] Verificar completude de migração
-- [ ] Remover código de arquitetura antiga
-- [ ] Validar compatibilidade reversa
-- [ ] Verificar performance mantida
-- [ ] Limpar código não utilizado
-
-**Limite de Tempo:** 1 dia
-
-#### Checkpoint: Após FASE 5.4 (Produção Final)
-**Áreas de Foco:**
-- Prontidão para produção
-- Revisão final de qualidade de código
-- Validação final de performance
-- Completude de documentação
-
-**Tarefas Específicas:**
-- [ ] Revisão final de código
-- [ ] Validação final de performance
-- [ ] Revisão final de cobertura de testes
-- [ ] Completar documentação
-- [ ] Checklist de prontidão para produção
-
-**Limite de Tempo:** 2 dias
-
-### Métricas para Acompanhar
-
-#### Métricas de Qualidade de Código
-- **Complexidade Ciclomática:** Deve diminuir ou permanecer estável
-- **Duplicação de Código:** Deve diminuir
-- **Comprimento de Função:** Deve permanecer razoável (< 100 linhas)
-- **Cobertura de Comentários:** Deve manter ou melhorar
-
-#### Métricas de Performance
-- **Latência de Inferência:** Deve manter ou melhorar
-- **Throughput de Treinamento:** Deve manter ou melhorar
-- **Uso de Memória:** Deve manter ou diminuir
-- **Conformidade Zero-Malloc:** Deve ser 100%
-
-#### Métricas de Qualidade de Testes
-- **Cobertura de Testes:** Deve manter ou melhorar
-- **Taxa de Passagem de Testes:** Deve ser 100%
-- **Tempo de Execução de Testes:** Deve permanecer razoável
-- **Cobertura de Testes Adversariais:** Deve manter ou melhorar
-
-### Critérios de Sucesso
-
-**Checkpoint é Bem-Sucedido Quando:**
-- [ ] Todos os testes passam
-- [ ] Performance está mantida ou melhorada
-- [ ] Métricas de qualidade de código melhoram ou permanecem estáveis
-- [ ] Documentação está atualizada
-- [ ] Dívida técnica está reduzida
-- [ ] Arquitetura está mais limpa
-- [ ] Código está mais manutenível
-
-**Documentação Detalhada:** Ver `docs/REFACTORING_CHECKPOINTS.md` para procedimentos completos de checkpoint.
-
----
-
 ## 8. PRÓXIMOS PASSOS
 
-### ✅ Implementação Completa: FASE 4.1 (Tokenizer)
+### Próxima Fase Imediata: FASE 4.2 (Main Loop)
 
-**Status:** ✅ **COMPLETA** (2025-01-02)
+**Status:** ⏳ **PENDENTE**
 
-O tokenizer BPE foi completamente implementado, testado e validado:
-- ✅ Carregamento de tokenizer binário (formato customizado)
-- ✅ Encode: texto → tokens (com suporte a BOS/EOS)
-- ✅ Decode: tokens → texto
-- ✅ Vocabulário: 256 tokens base + 3 tokens especiais (BOS, EOS, PAD)
-- ✅ Validações de segurança implementadas
-- ✅ Testes completos (Release + Debug com sanitizers)
-- ✅ Exemplo Hello World funcionando
+**Objetivo:** Implementar loop principal de geração de texto.
 
-**Documentação:** `docs/TOKENIZER_IMPLEMENTATION.md` - Documentação completa
+**Dependências:** 
+- ✅ FASE 4.1 (Tokenizer) - COMPLETA
+- ✅ FASE 3.3 (Forward Pass) - COMPLETA
 
-**Próximo Passo:** Completar forward pass (FASE 3.3) e implementar main loop (FASE 4.2)
-
-### ✅ Implementação Completa: FASE 2.5 (Inference Kernels)
-
-**Status:** ✅ **COMPLETA** (2025-12-31)
-
-Todos os kernels críticos foram implementados, testados e validados:
-1. ✅ MatMul FP32 AVX2
-2. ✅ Causal Masking AVX2
-3. ✅ Tensor Add AVX2
-4. ✅ Element-wise Mul AVX2
-
-**Próximo Passo:** Completar integração no forward pass (FASE 3.3)
+**Comando para Iniciar:**
+> **"Atue como Qorus-Architect. Vamos implementar a FASE 4.2. Comece com o main loop seguindo o planejamento completo. Use o framework MFR + CoT + Mathematical Proof + TDD conforme `docs/.cursorrules`."**
 
 ### Implementação Futura: FASE 2.6 (Training Kernels)
 
@@ -1175,6 +1301,8 @@ Para implementar capacidade de treinamento:
 3. Gradient Clipping - Estabilização de treinamento
 4. Backward Pass (FASE 3.4) - Propagação de gradientes
 5. Training Loop (FASE 3.5) - Loop completo de treinamento
+
+**Nota:** FASE 2.7 (CUDA Support) deve ser implementada antes ou em paralelo com FASE 2.6 para acelerar treinamento em GPU.
 
 ### Implementação Futura: FASE 5.0+ (Generic Framework v3.0)
 
@@ -1217,6 +1345,9 @@ Isso garante que o projeto comece com a estrutura correta.
 **Documentos de Planejamento (FASE 5.0+ - Generic Framework v3.0):**
 - `docs/GENERIC_FRAMEWORK_PLAN.md` - **Plano completo de framework genérico (MFR + CoT + Proof + TDD)**
 
+**Documentos de Planejamento (FASE 2.7 - CUDA Support):**
+- `docs/CUDA_ADAPTATION_PLAN.md` - **Plano completo de adaptação CUDA para Google Colab / GPU (MFR + CoT + Proof + TDD)** (a ser criado)
+
 **Documentação de Qualidade:**
 - `docs/REFACTORING_CHECKPOINTS.md` - **Procedimentos de checkpoint de refatoração e garantia de qualidade**
 
@@ -1228,4 +1359,3 @@ Isso garante que o projeto comece com a estrutura correta.
 - `docs/PRECISION_STANDARDS.md` - Padrões de precisão numérica
 - `docs/ASYMPTOTIC_ANALYSIS.md` - Análise assintótica
 - `docs/.cursorrules` - Metodologia de desenvolvimento (MFR + CoT + Proof + TDD)
-

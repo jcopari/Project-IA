@@ -1059,8 +1059,12 @@ static q_error_code llama_attention_forward(
     // CRITICAL: Ensure k_t_buf is properly aligned for AVX2 (32-byte alignment)
     // Q_ALIGN_SIZE already aligns to 64 bytes, but verify explicitly
     if (((uintptr_t)scratch->k_t_buf % 32) != 0) {
+        // Always print debug info (not just in DEBUG mode) to diagnose alignment issues
+        fprintf(stderr, "ERROR: k_t_buf not 32-byte aligned: %p (offset: %zu)\n", 
+                (void*)scratch->k_t_buf, (uintptr_t)scratch->k_t_buf % 32);
+        fprintf(stderr, "  k_t_buf addr=%zu, k_t_buf %% 32 = %zu\n", 
+                (uintptr_t)scratch->k_t_buf, (uintptr_t)scratch->k_t_buf % 32);
         #ifdef DEBUG
-        fprintf(stderr, "ERROR: k_t_buf not 32-byte aligned: %p\n", (void*)scratch->k_t_buf);
         abort();
         #endif
         return Q_ERR_MISALIGNED;
@@ -1167,10 +1171,26 @@ static q_error_code llama_attention_forward(
         }
         
         // Softmax: probs = softmax(scores) per row
+        // CRITICAL FIX: Ensure each row pointer is 32-byte aligned for AVX2
+        // scores_buf is allocated with Q_ALIGN_SIZE, but individual rows may not be aligned
+        // We need to copy each row to an aligned buffer before calling q_softmax_f32_avx2
         float* probs_buf = scratch->scores_buf;  // Reuse scores buffer
         
+        // Allocate aligned buffer for a single row (reused for all rows)
+        size_t row_size_aligned = Q_ALIGN_SIZE(seq_len * sizeof(float));
+        float* aligned_row_buf = (float*)q_arena_alloc(ctx, row_size_aligned * 2);  // *2 for input and output
+        if (aligned_row_buf == NULL) {
+            return Q_ERR_ARENA_OOM;
+        }
+        float* aligned_input = aligned_row_buf;
+        float* aligned_output = aligned_row_buf + (row_size_aligned / sizeof(float));
+        
         for (uint32_t i = 0; i < seq_len; i++) {
-            ret = q_softmax_f32_avx2(&scratch->scores_buf[i * seq_len], &probs_buf[i * seq_len], seq_len);
+            // Copy row to aligned buffer
+            memcpy(aligned_input, &scratch->scores_buf[i * seq_len], seq_len * sizeof(float));
+            
+            // Call softmax on aligned buffers
+            ret = q_softmax_f32_avx2(aligned_input, aligned_output, seq_len);
             if (ret != Q_OK) {
                 #ifdef DEBUG
                 fprintf(stderr, "ERROR: Softmax failed at row %u: ret=%d\n", i, ret);
@@ -1178,6 +1198,9 @@ static q_error_code llama_attention_forward(
                 #endif
                 return ret;
             }
+            
+            // Copy result back to probs_buf
+            memcpy(&probs_buf[i * seq_len], aligned_output, seq_len * sizeof(float));
         }
         
         // Attention output: probs @ V -> [seq_len, head_dim]
@@ -1584,6 +1607,15 @@ q_error_code llama_forward(
         .type = Q_F32
     };
     
+    // DEBUG: Verify alignment of last_token (always print, not just in DEBUG mode)
+    uintptr_t last_token_addr = (uintptr_t)last_token;
+    fprintf(stderr, "DEBUG: llama_forward: last_token alignment check:\n");
+    fprintf(stderr, "  last_token=%p, addr=%zu\n", last_token, last_token_addr);
+    fprintf(stderr, "  last_token %% 32 = %zu\n", last_token_addr % 32);
+    fprintf(stderr, "  last_token %% 64 = %zu\n", last_token_addr % 64);
+    fprintf(stderr, "  last_token_tensor.nb[0]=%zu, nb[0] %% 32 = %zu\n", 
+            last_token_tensor.nb[0], last_token_tensor.nb[0] % 32);
+    
     // CRITICAL FIX: For transposed tensors (B->nb[0] == sizeof(float)),
     // we cannot guarantee alignment of all elements.
     // q_matmul_f32_avx2 will detect this and use unaligned loads automatically.
@@ -1598,6 +1630,14 @@ q_error_code llama_forward(
         .type = Q_F32
     };
     
+    // DEBUG: Verify alignment of output tensor (always print)
+    uintptr_t output_addr = (uintptr_t)model->output->data;
+    fprintf(stderr, "DEBUG: llama_forward: output_t_tensor alignment check:\n");
+    fprintf(stderr, "  output->data=%p, addr=%zu\n", model->output->data, output_addr);
+    fprintf(stderr, "  output %% 32 = %zu\n", output_addr % 32);
+    fprintf(stderr, "  output_t_tensor.nb[0]=%zu, nb[0] %% 32 = %zu\n", 
+            output_t_tensor.nb[0], output_t_tensor.nb[0] % 32);
+    
     // Create tensor view for logits [1, vocab_size]
     q_tensor logits_tensor = {
         .data = (void*)logits,
@@ -1605,6 +1645,14 @@ q_error_code llama_forward(
         .nb = {vocab_size * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
+    
+    // DEBUG: Verify alignment of logits tensor (always print)
+    uintptr_t logits_addr = (uintptr_t)logits;
+    fprintf(stderr, "DEBUG: llama_forward: logits_tensor alignment check:\n");
+    fprintf(stderr, "  logits=%p, addr=%zu\n", logits, logits_addr);
+    fprintf(stderr, "  logits %% 32 = %zu\n", logits_addr % 32);
+    fprintf(stderr, "  logits_tensor.nb[0]=%zu, nb[0] %% 32 = %zu\n", 
+            logits_tensor.nb[0], logits_tensor.nb[0] % 32);
     
     // Compute: last_token [1, dim] @ output^T [dim, vocab_size] -> logits [1, vocab_size]
     ret = q_matmul_f32_avx2(&last_token_tensor, &output_t_tensor, &logits_tensor, ctx);
