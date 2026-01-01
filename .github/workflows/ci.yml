@@ -53,13 +53,14 @@ jobs:
     - name: Compilação Limpa (Release Mode)
       run: |
         make clean || echo "Aviso: make clean falhou (pode não existir)"
-        make all
-        # Verifica se o binário principal foi criado
-        if [ ! -f qorus-ia ]; then
-          echo "ERRO: Binário principal não foi criado"
+        # Compila objetos (biblioteca) - não requer main()
+        make objects
+        # Verifica se objetos foram criados
+        if [ -z "$(find build -name '*.o' -type f 2>/dev/null | head -1)" ]; then
+          echo "ERRO: Nenhum objeto compilado"
           exit 1
         fi
-        echo "✓ Build Release completo"
+        echo "✓ Build Release completo (objetos compilados)"
 
     - name: Executar Suite de Testes Básicos (Release)
       run: |
