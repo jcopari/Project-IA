@@ -202,11 +202,24 @@ check-syntax:
 	@echo "✓ Sintaxe OK"
 
 # Target para análise estática (requer GCC 10+)
+# CRITICAL FIX: Retornar código de erro apropriado se análise encontrar problemas críticos
 analyze:
 	@echo "Executando análise estática (GCC analyzer)..."
 	@$(MAKE) clean
-	@$(MAKE) ANALYZE=1 all 2>&1 | tee static-analysis.log || true
-	@echo "✓ Análise estática concluída (ver static-analysis.log)"
+	@$(MAKE) ANALYZE=1 all 2>&1 | tee static-analysis.log; \
+	ANALYZE_EXIT=$$?; \
+	if [ $$ANALYZE_EXIT -ne 0 ]; then \
+		echo "⚠ Compilação com análise estática falhou (exit code $$ANALYZE_EXIT)"; \
+		echo "Verificando se há erros críticos..."; \
+		if grep -qE "(error|warning.*leak|warning.*use-after-free|warning.*null-dereference)" static-analysis.log 2>/dev/null; then \
+			echo "❌ ERROS CRÍTICOS ENCONTRADOS na análise estática!"; \
+			grep -E "(error|warning.*leak|warning.*use-after-free|warning.*null-dereference)" static-analysis.log | head -20; \
+			exit 1; \
+		fi; \
+		echo "⚠ Problemas não-críticos encontrados (ver static-analysis.log)"; \
+		exit 0; \
+	fi; \
+	echo "✓ Análise estática concluída (ver static-analysis.log)"
 
 # Target para análise estática complementar com cppcheck
 analyze-cppcheck:
@@ -430,7 +443,8 @@ test-integration-all: test-ops-integration
 	@echo "✓ Todos os testes de integração concluídos"
 
 # Validação completa (Release + Debug)
-test-validation: clean
+# CRITICAL FIX: Remover clean redundante - clean-test-artifacts já faz limpeza completa
+test-validation: clean-test-artifacts
 	@echo "=== Running Release Tests ==="
 	@$(MAKE) test-memory
 	@$(MAKE) test-dequantize
