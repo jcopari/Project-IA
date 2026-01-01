@@ -220,6 +220,7 @@ typedef struct {
     void*           scratch_buffer;
     size_t          scratch_size;
     size_t          scratch_head;
+    size_t          scratch_base_offset;  // Watermark: onde o scratchpad começa (modelo antes disso)
 } q_context;
 
 // ============================================================================

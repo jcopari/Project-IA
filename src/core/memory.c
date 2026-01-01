@@ -153,6 +153,7 @@ q_error_code q_alloc_kv_cache(q_context* restrict ctx, size_t kv_size) {
 }
 
 // Alocar Arena (Tier 3: Transient)
+// CORREÇÃO 5: Inicializa scratch_base_offset para 0 (será atualizado após llama_build_graph)
 q_error_code q_alloc_arena(q_context* restrict ctx, size_t arena_size) {
     Q_VALIDATE_PTR_OR_RETURN(ctx, Q_ERR_INVALID_ARG);
     
@@ -175,6 +176,7 @@ q_error_code q_alloc_arena(q_context* restrict ctx, size_t arena_size) {
     ctx->scratch_buffer = arena_buf;
     ctx->scratch_size = aligned_size;
     ctx->scratch_head = 0;  // Inicialmente alinhado
+    ctx->scratch_base_offset = 0;  // CORREÇÃO 5: Inicializar (será atualizado após llama_build_graph)
 
     Q_ASSERT_ALIGNED(arena_buf);
     return Q_OK;
@@ -256,6 +258,8 @@ void* q_arena_alloc(q_context* restrict ctx, size_t size) {
 }
 
 // Reset arena (com poisoning seguro e otimizado)
+// CORREÇÃO 5: Resetar apenas para scratch_base_offset, não para 0
+// Isso protege estruturas do modelo alocadas antes do scratchpad
 void q_arena_reset(q_context* restrict ctx) {
     // Security: Validate context pointer
     if (__builtin_expect(ctx == NULL, 0)) {
@@ -269,31 +273,35 @@ void q_arena_reset(q_context* restrict ctx) {
     #ifdef DEBUG
     // Early return if arena not initialized
     if (ctx->scratch_buffer == NULL) {
-        ctx->scratch_head = 0;
+        ctx->scratch_head = ctx->scratch_base_offset;
         return;
     }
     
-    // Calculate poison_size safely
-    size_t poison_size = ctx->scratch_head;
+    // Calculate poison_size safely (apenas a parte do scratchpad, não o modelo)
+    size_t scratch_used = ctx->scratch_head - ctx->scratch_base_offset;
+    size_t poison_size = scratch_used;
     if (poison_size > Q_ARENA_POISON_SIZE) {
         poison_size = Q_ARENA_POISON_SIZE;
     }
-    if (poison_size > ctx->scratch_size) {
-        poison_size = ctx->scratch_size;
+    if (poison_size + ctx->scratch_base_offset > ctx->scratch_size) {
+        poison_size = (ctx->scratch_size > ctx->scratch_base_offset) ? 
+                      (ctx->scratch_size - ctx->scratch_base_offset) : 0;
     }
 
-    // Use memset for safety and performance
+    // Use memset for safety and performance (apenas na região do scratchpad)
     if (poison_size > 0) {
-        memset(ctx->scratch_buffer, 0xDE, poison_size);
+        uint8_t* scratch_start = (uint8_t*)ctx->scratch_buffer + ctx->scratch_base_offset;
+        memset(scratch_start, 0xDE, poison_size);
     }
     
-    if (ctx->scratch_head > Q_ARENA_POISON_SIZE) {
-        fprintf(stderr, "WARNING: Arena reset com %zu bytes usados (possível vazamento?)\n", 
-                ctx->scratch_head);
+    if (scratch_used > Q_ARENA_POISON_SIZE) {
+        fprintf(stderr, "WARNING: Arena reset com %zu bytes de scratchpad usados (possível vazamento?)\n", 
+                scratch_used);
     }
     #endif
     
-    ctx->scratch_head = 0;
+    // CORREÇÃO 5: Resetar para scratch_base_offset, não para 0
+    ctx->scratch_head = ctx->scratch_base_offset;
 }
 
 void q_free_memory(q_context* restrict ctx) {
@@ -316,6 +324,7 @@ void q_free_memory(q_context* restrict ctx) {
         ctx->scratch_buffer = NULL;
         ctx->scratch_size = 0;
         ctx->scratch_head = 0;
+        ctx->scratch_base_offset = 0;  // CORREÇÃO 5: Resetar também
     }
     
     // 2. Free KV cache (allocated second)

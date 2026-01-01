@@ -36,6 +36,7 @@ typedef struct {
     float* cos_buf;
     float* sin_buf;
     float* scores_buf;
+    size_t scores_stride_floats;  // Stride alinhado para scores_buf (em floats, não bytes)
     float* q_heads;
     float* k_heads;
     float* v_heads;
@@ -600,6 +601,11 @@ q_error_code llama_build_graph(q_context* restrict ctx, q_llama_model* restrict 
         }
     }
     
+    // CORREÇÃO 5: Definir watermark após todas as alocações do modelo
+    // Tudo antes deste ponto é estrutura do modelo (persistente)
+    // Tudo depois será scratchpad (transiente, resetado a cada inferência)
+    ctx->scratch_base_offset = ctx->scratch_head;
+    
     return Q_OK;
 }
 
@@ -685,7 +691,9 @@ static size_t calculate_layer_scratchpad_size(const q_llama_config* config, uint
     size_t buf_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)dim * sizeof(float));
     size_t hidden_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)hidden_dim * sizeof(float));
     size_t head_dim_size = Q_ALIGN_SIZE((size_t)head_dim * sizeof(float));
-    size_t scores_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)seq_len * sizeof(float));
+    // CORREÇÃO 1: Stride alinhado para scores_buf - cada linha está alinhada a 32 bytes
+    size_t row_stride_floats = Q_ALIGN_SIZE(seq_len * sizeof(float)) / sizeof(float);
+    size_t scores_size = row_stride_floats * seq_len * sizeof(float);
     size_t q_per_head_size = Q_ALIGN_SIZE((size_t)seq_len * head_dim * sizeof(float));
     size_t kv_dim = (size_t)n_kv_heads * head_dim;
     size_t kv_buf_size = Q_ALIGN_SIZE((size_t)seq_len * kv_dim * sizeof(float));
@@ -695,7 +703,7 @@ static size_t calculate_layer_scratchpad_size(const q_llama_config* config, uint
            kv_buf_size * 2 +                  // k_buf, v_buf
            buf_size * 2 +                     // q_rope_buf, k_rope_buf
            head_dim_size * 2 +                // cos_buf, sin_buf
-           scores_size +                      // scores_buf
+           scores_size +                      // scores_buf (com stride alinhado)
            q_per_head_size * n_heads +        // q_heads
            q_per_head_size * n_kv_heads * 2 + // k_heads, v_heads
            q_per_head_size +                  // attn_head_buf
@@ -720,7 +728,9 @@ static void init_layer_scratchpad(
     size_t buf_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)dim * sizeof(float));
     size_t hidden_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)hidden_dim * sizeof(float));
     size_t head_dim_size = Q_ALIGN_SIZE((size_t)head_dim * sizeof(float));
-    size_t scores_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)seq_len * sizeof(float));
+    // CORREÇÃO 1: Stride alinhado para scores_buf
+    size_t row_stride_floats = Q_ALIGN_SIZE(seq_len * sizeof(float)) / sizeof(float);
+    size_t scores_size = row_stride_floats * seq_len * sizeof(float);
     size_t q_per_head_size = Q_ALIGN_SIZE((size_t)seq_len * head_dim * sizeof(float));
     size_t kv_dim = (size_t)n_kv_heads * head_dim;
     size_t kv_buf_size = Q_ALIGN_SIZE((size_t)seq_len * kv_dim * sizeof(float));
@@ -759,6 +769,7 @@ static void init_layer_scratchpad(
     offset += head_dim_size;
     
     scratch->scores_buf = (float*)(mem_base + offset);
+    scratch->scores_stride_floats = row_stride_floats;  // Armazenar stride
     offset += scores_size;
     
     scratch->q_heads = (float*)(mem_base + offset);
@@ -1086,10 +1097,18 @@ static q_error_code llama_attention_forward(
         // This avoids redundant transposition for query heads that share the same KV head
         if (kv_head_idx != last_transposed_kv_head) {
             const float* k_head_data = scratch->k_heads + (size_t)kv_head_idx * (seq_len * head_dim);
+            // CORREÇÃO 3: Transposição tiled para melhor cache locality
             // Transpose K: [seq_len, head_dim] -> [head_dim, seq_len]
-            for (uint32_t i = 0; i < seq_len; i++) {
-                for (uint32_t j = 0; j < head_dim; j++) {
-                    scratch->k_t_buf[j * seq_len + i] = k_head_data[i * head_dim + j];
+            #define TRANSPOSE_TILE_SIZE 32
+            for (uint32_t ii = 0; ii < seq_len; ii += TRANSPOSE_TILE_SIZE) {
+                uint32_t i_end = (ii + TRANSPOSE_TILE_SIZE < seq_len) ? ii + TRANSPOSE_TILE_SIZE : seq_len;
+                for (uint32_t jj = 0; jj < head_dim; jj += TRANSPOSE_TILE_SIZE) {
+                    uint32_t j_end = (jj + TRANSPOSE_TILE_SIZE < head_dim) ? jj + TRANSPOSE_TILE_SIZE : head_dim;
+                    for (uint32_t i = ii; i < i_end; i++) {
+                        for (uint32_t j = jj; j < j_end; j++) {
+                            scratch->k_t_buf[j * seq_len + i] = k_head_data[i * head_dim + j];
+                        }
+                    }
                 }
             }
             last_transposed_kv_head = kv_head_idx;
@@ -1115,7 +1134,7 @@ static q_error_code llama_attention_forward(
         q_tensor scores_tensor = {
             .data = (void*)scratch->scores_buf,
             .ne = {seq_len, seq_len, 1, 1},
-            .nb = {seq_len * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+            .nb = {scratch->scores_stride_floats * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
             .type = Q_F32
         };
         
@@ -1171,26 +1190,17 @@ static q_error_code llama_attention_forward(
         }
         
         // Softmax: probs = softmax(scores) per row
-        // CRITICAL FIX: Ensure each row pointer is 32-byte aligned for AVX2
-        // scores_buf is allocated with Q_ALIGN_SIZE, but individual rows may not be aligned
-        // We need to copy each row to an aligned buffer before calling q_softmax_f32_avx2
+        // CORREÇÃO 1: scores_buf já tem stride alinhado, cada linha está alinhada a 32 bytes
+        // Não precisamos mais de memcpy - podemos chamar softmax diretamente in-place
         float* probs_buf = scratch->scores_buf;  // Reuse scores buffer
         
-        // Allocate aligned buffer for a single row (reused for all rows)
-        size_t row_size_aligned = Q_ALIGN_SIZE(seq_len * sizeof(float));
-        float* aligned_row_buf = (float*)q_arena_alloc(ctx, row_size_aligned * 2);  // *2 for input and output
-        if (aligned_row_buf == NULL) {
-            return Q_ERR_ARENA_OOM;
-        }
-        float* aligned_input = aligned_row_buf;
-        float* aligned_output = aligned_row_buf + (row_size_aligned / sizeof(float));
-        
         for (uint32_t i = 0; i < seq_len; i++) {
-            // Copy row to aligned buffer
-            memcpy(aligned_input, &scratch->scores_buf[i * seq_len], seq_len * sizeof(float));
+            // Cada linha está alinhada devido ao stride alinhado
+            float* row_ptr = &scratch->scores_buf[i * scratch->scores_stride_floats];
             
-            // Call softmax on aligned buffers
-            ret = q_softmax_f32_avx2(aligned_input, aligned_output, seq_len);
+            // Call softmax in-place (input e output são o mesmo buffer)
+            // Usar cast para evitar warning de aliasing (é seguro aqui pois é in-place)
+            ret = q_softmax_f32_avx2(row_ptr, (float* __restrict__)row_ptr, seq_len);
             if (ret != Q_OK) {
                 #ifdef DEBUG
                 fprintf(stderr, "ERROR: Softmax failed at row %u: ret=%d\n", i, ret);
@@ -1198,16 +1208,14 @@ static q_error_code llama_attention_forward(
                 #endif
                 return ret;
             }
-            
-            // Copy result back to probs_buf
-            memcpy(&probs_buf[i * seq_len], aligned_output, seq_len * sizeof(float));
         }
         
         // Attention output: probs @ V -> [seq_len, head_dim]
+        // CORREÇÃO 1: Usar stride alinhado para probs_tensor
         q_tensor probs_tensor = {
             .data = (void*)probs_buf,
             .ne = {seq_len, seq_len, 1, 1},
-            .nb = {seq_len * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+            .nb = {scratch->scores_stride_floats * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
             .type = Q_F32
         };
         

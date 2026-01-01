@@ -100,18 +100,21 @@ q_error_code q_softmax_f32_avx2(
         sum_val += exp_val;
     }
     
-    __m256 sum_broadcast = _mm256_set1_ps(sum_val);
+    // CORREÇÃO 2: Multiplicação por recíproco em vez de divisão (mais rápido)
+    // Calcular recíproco uma vez e multiplicar (latência menor que divisão)
+    float inv_sum = 1.0f / sum_val;
+    __m256 inv_sum_vec = _mm256_set1_ps(inv_sum);
     
-    // Step 3: Normalize (divide by sum) - vectorized + scalar tail
+    // Step 3: Normalize (multiply by inverse sum) - vectorized + scalar tail
     for (uint32_t i = 0; i < vec_count; i++) {
         __m256 exp_vec = _mm256_load_ps(output + i * 8);
-        __m256 normalized = _mm256_div_ps(exp_vec, sum_broadcast);
+        __m256 normalized = _mm256_mul_ps(exp_vec, inv_sum_vec);
         _mm256_store_ps(output + i * 8, normalized);
     }
     
     // Handle tail for normalization
     for (uint32_t i = vec_count * 8; i < N; i++) {
-        output[i] /= sum_val;
+        output[i] *= inv_sum;
     }
     
     #ifdef DEBUG
