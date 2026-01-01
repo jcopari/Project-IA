@@ -15,6 +15,63 @@
 } while (0)
 
 // ============================================================================
+// Validações Estáticas de Segurança
+// ============================================================================
+
+// Garante que Q_ALIGN é potência de 2 e adequado para AVX2
+_Static_assert((Q_ALIGN & (Q_ALIGN - 1)) == 0, "Q_ALIGN must be a power of 2");
+_Static_assert(Q_ALIGN >= 32, "Q_ALIGN must be at least 32 bytes for AVX2");
+
+// ============================================================================
+// Security Helpers (Arithmetic & Alignment)
+// ============================================================================
+
+// Helper: Safe addition with overflow check
+// Returns true on success, false on overflow or invalid pointer
+static inline bool safe_add(size_t* result, size_t a, size_t b) {
+    if (__builtin_expect(result == NULL, 0)) return false;
+    if (__builtin_expect(a > SIZE_MAX - b, 0)) return false; // Overflow
+    *result = a + b;
+    return true;
+}
+
+// Helper: Safe multiplication with overflow check
+// Returns true on success, false on overflow or invalid pointer
+static inline bool safe_mul(size_t* result, size_t a, size_t b) {
+    if (__builtin_expect(result == NULL, 0)) return false;
+    if (a == 0 || b == 0) {
+        *result = 0;
+        return true;
+    }
+    if (__builtin_expect(a > SIZE_MAX / b, 0)) return false; // Overflow
+    *result = a * b;
+    return true;
+}
+
+// Helper: Safe alignment of offset (modifica o offset in-place)
+// Returns true on success, false on overflow or invalid alignment
+static inline bool safe_align_offset(size_t* offset, size_t alignment) {
+    if (__builtin_expect(offset == NULL, 0)) return false;
+    
+    // CRITICAL: Validate power of 2 (Defense in Depth)
+    if (__builtin_expect(alignment == 0 || (alignment & (alignment - 1)) != 0, 0)) return false;
+
+    size_t current = *offset;
+    // Check overflow: offset + alignment - 1
+    if (__builtin_expect(current > SIZE_MAX - (alignment - 1), 0)) return false;
+
+    *offset = (current + alignment - 1) & ~(alignment - 1);
+    return true;
+}
+
+// Helper: Safe calculation of aligned size (retorna o tamanho alinhado)
+// Returns aligned size, or 0 on overflow
+static inline size_t safe_align_size(size_t size) {
+    if (__builtin_expect(size > SIZE_MAX - (Q_ALIGN - 1), 0)) return 0; // Overflow
+    return (size + Q_ALIGN - 1) & ~(Q_ALIGN - 1);
+}
+
+// ============================================================================
 // Correção 1: Estrutura de Scratchpad Reutilizável
 // ============================================================================
 
@@ -48,6 +105,9 @@ typedef struct {
     float* up_buf;
     float* mul_buf;
     float* gate_silu;
+    
+    // Buffer alinhado para o último token (evita alocação no hot path)
+    float* last_token_buf;
 } layer_scratchpad;
 
 // FASE 3.2: Build model graph from mmap'd .qorus file
@@ -684,123 +744,231 @@ static float* get_kv_cache_ptr(
 // ============================================================================
 
 // Calcular tamanho máximo necessário para scratchpad
+// CRITICAL: Todas as multiplicações são validadas passo-a-passo para prevenir overflow
 static size_t calculate_layer_scratchpad_size(const q_llama_config* config, uint32_t seq_len) {
-    uint32_t dim = config->dim;
-    uint32_t hidden_dim = config->hidden_dim;
-    uint32_t head_dim = dim / config->n_heads;
-    uint32_t n_heads = config->n_heads;
-    uint32_t n_kv_heads = config->n_kv_heads;
+    size_t tmp_bytes = 0;
+    size_t head_dim = config->dim / config->n_heads; // Divisão inteira implícita
+
+    // --- 1. Cálculo Seguro dos Tamanhos Base ---
+    // Previne overflow ANTES de alinhar
+
+    // buf_size = align(seq_len * dim * 4)
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, (size_t)config->dim)) return 0;
+    if (!safe_mul(&tmp_bytes, tmp_bytes, sizeof(float))) return 0;
+    size_t buf_size = safe_align_size(tmp_bytes);
+    if (buf_size == 0) return 0;
+
+    // hidden_size = align(seq_len * hidden_dim * 4)
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, (size_t)config->hidden_dim)) return 0;
+    if (!safe_mul(&tmp_bytes, tmp_bytes, sizeof(float))) return 0;
+    size_t hidden_size = safe_align_size(tmp_bytes);
+    if (hidden_size == 0) return 0;
+
+    // kv_buf_size
+    size_t kv_dim_total; 
+    if (!safe_mul(&kv_dim_total, (size_t)config->n_kv_heads, head_dim)) return 0;
     
-    size_t buf_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)dim * sizeof(float));
-    size_t hidden_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)hidden_dim * sizeof(float));
-    size_t head_dim_size = Q_ALIGN_SIZE((size_t)head_dim * sizeof(float));
-    // CORREÇÃO 1: Stride alinhado para scores_buf - cada linha está alinhada a 32 bytes
-    size_t row_stride_floats = Q_ALIGN_SIZE(seq_len * sizeof(float)) / sizeof(float);
-    size_t scores_size = row_stride_floats * seq_len * sizeof(float);
-    size_t q_per_head_size = Q_ALIGN_SIZE((size_t)seq_len * head_dim * sizeof(float));
-    size_t kv_dim = (size_t)n_kv_heads * head_dim;
-    size_t kv_buf_size = Q_ALIGN_SIZE((size_t)seq_len * kv_dim * sizeof(float));
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, kv_dim_total)) return 0;
+    if (!safe_mul(&tmp_bytes, tmp_bytes, sizeof(float))) return 0;
+    size_t kv_buf_size = safe_align_size(tmp_bytes);
+    if (kv_buf_size == 0) return 0;
+
+    // head_dim_size = align(head_dim * 4)
+    if (!safe_mul(&tmp_bytes, head_dim, sizeof(float))) return 0;
+    size_t head_dim_size = safe_align_size(tmp_bytes);
+    if (head_dim_size == 0) return 0;
+
+    // q_per_head_size = align(seq_len * head_dim * 4)
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, head_dim)) return 0;
+    if (!safe_mul(&tmp_bytes, tmp_bytes, sizeof(float))) return 0;
+    size_t q_per_head_size = safe_align_size(tmp_bytes);
+    if (q_per_head_size == 0) return 0;
+
+    // scores_size
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, sizeof(float))) return 0;
+    size_t row_stride_bytes = safe_align_size(tmp_bytes);
+    if (row_stride_bytes == 0) return 0;
     
-    return buf_size * 4 +                    // attn_out, mlp_out, x_norm, x_norm_mlp
-           buf_size +                         // q_buf
-           kv_buf_size * 2 +                  // k_buf, v_buf
-           buf_size * 2 +                     // q_rope_buf, k_rope_buf
-           head_dim_size * 2 +                // cos_buf, sin_buf
-           scores_size +                      // scores_buf (com stride alinhado)
-           q_per_head_size * n_heads +        // q_heads
-           q_per_head_size * n_kv_heads * 2 + // k_heads, v_heads
-           q_per_head_size +                  // attn_head_buf
-           q_per_head_size +                  // k_t_buf
-           hidden_size * 4;                   // gate_buf, up_buf, mul_buf, gate_silu
+    size_t scores_size;
+    if (!safe_mul(&scores_size, row_stride_bytes, (size_t)seq_len)) return 0;
+
+    // --- 2. Acumulação Segura (Exaustiva) ---
+    size_t total = 0;
+    size_t term = 0;
+
+    // 4 * buf_size (attn_out, mlp_out, x_norm, x_norm_mlp)
+    if (!safe_mul(&term, buf_size, 4)) return 0;
+    if (!safe_add(&total, total, term)) return 0;
+
+    // 1 * buf_size (q_buf)
+    if (!safe_add(&total, total, buf_size)) return 0;
+
+    // 2 * kv_buf_size (k_buf, v_buf)
+    if (!safe_mul(&term, kv_buf_size, 2)) return 0;
+    if (!safe_add(&total, total, term)) return 0;
+
+    // 2 * buf_size (q_rope, k_rope)
+    if (!safe_mul(&term, buf_size, 2)) return 0;
+    if (!safe_add(&total, total, term)) return 0;
+
+    // 2 * head_dim_size (cos, sin)
+    if (!safe_mul(&term, head_dim_size, 2)) return 0;
+    if (!safe_add(&total, total, term)) return 0;
+
+    // scores_size
+    if (!safe_add(&total, total, scores_size)) return 0;
+
+    // n_heads * q_per_head_size (q_heads)
+    if (!safe_mul(&term, q_per_head_size, (size_t)config->n_heads)) return 0;
+    if (!safe_add(&total, total, term)) return 0;
+
+    // 2 * n_kv_heads * q_per_head_size (k_heads, v_heads)
+    if (!safe_mul(&term, q_per_head_size, (size_t)config->n_kv_heads)) return 0;
+    if (!safe_mul(&term, term, 2)) return 0;
+    if (!safe_add(&total, total, term)) return 0;
+
+    // 2 * q_per_head_size (attn_head, k_t)
+    if (!safe_mul(&term, q_per_head_size, 2)) return 0;
+    if (!safe_add(&total, total, term)) return 0;
+
+    // 4 * hidden_size (gate, up, mul, gate_silu)
+    if (!safe_mul(&term, hidden_size, 4)) return 0;
+    if (!safe_add(&total, total, term)) return 0;
+
+    // Last Token Buffer
+    if (!safe_mul(&tmp_bytes, (size_t)config->dim, sizeof(float))) return 0;
+    size_t last_token_size = safe_align_size(tmp_bytes);
+    if (last_token_size == 0) return 0;
+    if (!safe_add(&total, total, last_token_size)) return 0;
+
+    return total;
 }
 
 // Inicializar scratchpad a partir de bloco de memória contíguo
-static void init_layer_scratchpad(
+// CRITICAL: Retorna código de erro para propagar falhas de overflow/alinhamento
+static q_error_code init_layer_scratchpad(
     layer_scratchpad* scratch,
     uint8_t* mem_base,
     const q_llama_config* config,
     uint32_t seq_len
 ) {
-    uint32_t dim = config->dim;
-    uint32_t hidden_dim = config->hidden_dim;
-    uint32_t head_dim = dim / config->n_heads;
-    uint32_t n_heads = config->n_heads;
-    uint32_t n_kv_heads = config->n_kv_heads;
+    if (scratch == NULL || mem_base == NULL || config == NULL) return Q_ERR_INVALID_ARG;
+
+    // Validação de alinhamento da base (Fundamental)
+    if ((uintptr_t)mem_base % Q_ALIGN != 0) {
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: Scratchpad memory base not aligned to %d bytes\n", Q_ALIGN);
+        #endif
+        return Q_ERR_MISALIGNED;
+    }
+
+    size_t tmp_bytes = 0;
+    size_t head_dim = config->dim / config->n_heads;
+
+    // --- Recálculo Seguro dos Tamanhos Base ---
     
+    // buf_size
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, (size_t)config->dim)) return Q_ERR_OVERFLOW;
+    if (!safe_mul(&tmp_bytes, tmp_bytes, sizeof(float))) return Q_ERR_OVERFLOW;
+    size_t buf_size = safe_align_size(tmp_bytes);
+    if (buf_size == 0) return Q_ERR_OVERFLOW;
+
+    // hidden_size
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, (size_t)config->hidden_dim)) return Q_ERR_OVERFLOW;
+    if (!safe_mul(&tmp_bytes, tmp_bytes, sizeof(float))) return Q_ERR_OVERFLOW;
+    size_t hidden_size = safe_align_size(tmp_bytes);
+    if (hidden_size == 0) return Q_ERR_OVERFLOW;
+
+    // kv_buf_size
+    size_t kv_dim_total;
+    if (!safe_mul(&kv_dim_total, (size_t)config->n_kv_heads, head_dim)) return Q_ERR_OVERFLOW;
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, kv_dim_total)) return Q_ERR_OVERFLOW;
+    if (!safe_mul(&tmp_bytes, tmp_bytes, sizeof(float))) return Q_ERR_OVERFLOW;
+    size_t kv_buf_size = safe_align_size(tmp_bytes);
+    if (kv_buf_size == 0) return Q_ERR_OVERFLOW;
+
+    // head_dim_size
+    if (!safe_mul(&tmp_bytes, head_dim, sizeof(float))) return Q_ERR_OVERFLOW;
+    size_t head_dim_size = safe_align_size(tmp_bytes);
+    if (head_dim_size == 0) return Q_ERR_OVERFLOW;
+
+    // q_per_head_size
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, head_dim)) return Q_ERR_OVERFLOW;
+    if (!safe_mul(&tmp_bytes, tmp_bytes, sizeof(float))) return Q_ERR_OVERFLOW;
+    size_t q_per_head_size = safe_align_size(tmp_bytes);
+    if (q_per_head_size == 0) return Q_ERR_OVERFLOW;
+
+    // scores_size
+    if (!safe_mul(&tmp_bytes, (size_t)seq_len, sizeof(float))) return Q_ERR_OVERFLOW;
+    size_t row_stride_bytes = safe_align_size(tmp_bytes);
+    if (row_stride_bytes == 0) return Q_ERR_OVERFLOW;
+    size_t scores_size;
+    if (!safe_mul(&scores_size, row_stride_bytes, (size_t)seq_len)) return Q_ERR_OVERFLOW;
+
     size_t offset = 0;
-    size_t buf_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)dim * sizeof(float));
-    size_t hidden_size = Q_ALIGN_SIZE((size_t)seq_len * (size_t)hidden_dim * sizeof(float));
-    size_t head_dim_size = Q_ALIGN_SIZE((size_t)head_dim * sizeof(float));
-    // CORREÇÃO 1: Stride alinhado para scores_buf
-    size_t row_stride_floats = Q_ALIGN_SIZE(seq_len * sizeof(float)) / sizeof(float);
-    size_t scores_size = row_stride_floats * seq_len * sizeof(float);
-    size_t q_per_head_size = Q_ALIGN_SIZE((size_t)seq_len * head_dim * sizeof(float));
-    size_t kv_dim = (size_t)n_kv_heads * head_dim;
-    size_t kv_buf_size = Q_ALIGN_SIZE((size_t)seq_len * kv_dim * sizeof(float));
+
+    // --- Atribuição Explícita ---
     
-    scratch->attn_out = (float*)(mem_base + offset);
-    offset += buf_size;
-    
-    scratch->mlp_out = (float*)(mem_base + offset);
-    offset += buf_size;
-    
-    scratch->x_norm = (float*)(mem_base + offset);
-    offset += buf_size;
-    
-    scratch->x_norm_mlp = (float*)(mem_base + offset);
-    offset += buf_size;
-    
-    scratch->q_buf = (float*)(mem_base + offset);
-    offset += buf_size;
-    
-    scratch->k_buf = (float*)(mem_base + offset);
-    offset += kv_buf_size;
-    
-    scratch->v_buf = (float*)(mem_base + offset);
-    offset += kv_buf_size;
-    
-    scratch->q_rope_buf = (float*)(mem_base + offset);
-    offset += buf_size;
-    
-    scratch->k_rope_buf = (float*)(mem_base + offset);
-    offset += buf_size;
-    
-    scratch->cos_buf = (float*)(mem_base + offset);
-    offset += head_dim_size;
-    
-    scratch->sin_buf = (float*)(mem_base + offset);
-    offset += head_dim_size;
-    
+    // Macro local para reduzir verbosidade mas manter segurança explícita
+    #define ASSIGN_AND_ADVANCE(ptr_field, size) \
+        do { \
+            scratch->ptr_field = (float*)(mem_base + offset); \
+            if (!safe_add(&offset, offset, (size))) return Q_ERR_OVERFLOW; \
+            if (!safe_align_offset(&offset, Q_ALIGN)) return Q_ERR_OVERFLOW; \
+        } while(0)
+
+    ASSIGN_AND_ADVANCE(attn_out, buf_size);
+    ASSIGN_AND_ADVANCE(mlp_out, buf_size);
+    ASSIGN_AND_ADVANCE(x_norm, buf_size);
+    ASSIGN_AND_ADVANCE(x_norm_mlp, buf_size);
+
+    ASSIGN_AND_ADVANCE(q_buf, buf_size);
+    ASSIGN_AND_ADVANCE(k_buf, kv_buf_size);
+    ASSIGN_AND_ADVANCE(v_buf, kv_buf_size);
+
+    ASSIGN_AND_ADVANCE(q_rope_buf, buf_size);
+    ASSIGN_AND_ADVANCE(k_rope_buf, buf_size);
+
+    ASSIGN_AND_ADVANCE(cos_buf, head_dim_size);
+    ASSIGN_AND_ADVANCE(sin_buf, head_dim_size);
+
+    // Scores (Special Case for Stride)
     scratch->scores_buf = (float*)(mem_base + offset);
-    scratch->scores_stride_floats = row_stride_floats;  // Armazenar stride
-    offset += scores_size;
-    
+    scratch->scores_stride_floats = row_stride_bytes / sizeof(float);
+    if (!safe_add(&offset, offset, scores_size)) return Q_ERR_OVERFLOW;
+    if (!safe_align_offset(&offset, Q_ALIGN)) return Q_ERR_OVERFLOW;
+
+    // Heads
+    size_t q_heads_total, k_heads_total;
+    if (!safe_mul(&q_heads_total, q_per_head_size, (size_t)config->n_heads)) return Q_ERR_OVERFLOW;
+    if (!safe_mul(&k_heads_total, q_per_head_size, (size_t)config->n_kv_heads)) return Q_ERR_OVERFLOW;
+
     scratch->q_heads = (float*)(mem_base + offset);
-    offset += q_per_head_size * n_heads;
+    if (!safe_add(&offset, offset, q_heads_total) || !safe_align_offset(&offset, Q_ALIGN)) return Q_ERR_OVERFLOW;
     
     scratch->k_heads = (float*)(mem_base + offset);
-    offset += q_per_head_size * n_kv_heads;
+    if (!safe_add(&offset, offset, k_heads_total) || !safe_align_offset(&offset, Q_ALIGN)) return Q_ERR_OVERFLOW;
     
     scratch->v_heads = (float*)(mem_base + offset);
-    offset += q_per_head_size * n_kv_heads;
-    
-    scratch->attn_head_buf = (float*)(mem_base + offset);
-    offset += q_per_head_size;
-    
-    scratch->k_t_buf = (float*)(mem_base + offset);
-    offset += q_per_head_size;
-    
-    scratch->gate_buf = (float*)(mem_base + offset);
-    offset += hidden_size;
-    
-    scratch->up_buf = (float*)(mem_base + offset);
-    offset += hidden_size;
-    
-    scratch->mul_buf = (float*)(mem_base + offset);
-    offset += hidden_size;
-    
-    scratch->gate_silu = (float*)(mem_base + offset);
-    // offset += hidden_size; // Não necessário, último buffer
+    if (!safe_add(&offset, offset, k_heads_total) || !safe_align_offset(&offset, Q_ALIGN)) return Q_ERR_OVERFLOW;
+
+    ASSIGN_AND_ADVANCE(attn_head_buf, q_per_head_size);
+    ASSIGN_AND_ADVANCE(k_t_buf, q_per_head_size);
+
+    ASSIGN_AND_ADVANCE(gate_buf, hidden_size);
+    ASSIGN_AND_ADVANCE(up_buf, hidden_size);
+    ASSIGN_AND_ADVANCE(mul_buf, hidden_size);
+    ASSIGN_AND_ADVANCE(gate_silu, hidden_size);
+
+    // Last Token (Atomic Calculation)
+    if (!safe_mul(&tmp_bytes, (size_t)config->dim, sizeof(float))) return Q_ERR_OVERFLOW;
+    size_t last_token_size = safe_align_size(tmp_bytes);
+    if (last_token_size == 0) return Q_ERR_OVERFLOW;
+
+    ASSIGN_AND_ADVANCE(last_token_buf, last_token_size);
+
+    #undef ASSIGN_AND_ADVANCE
+    return Q_OK;
 }
 
 // ============================================================================
@@ -1553,13 +1721,42 @@ q_error_code llama_forward(
     // CORREÇÃO 1: Alocar scratchpad UMA VEZ antes do loop de camadas
     // ============================================================================
     size_t scratchpad_size = calculate_layer_scratchpad_size(&model->config, seq_len);
+    if (scratchpad_size == 0) return Q_ERR_OVERFLOW;
+    
     layer_scratchpad scratch;
     uint8_t* scratch_mem = (uint8_t*)q_arena_alloc(ctx, scratchpad_size);
     if (scratch_mem == NULL) {
         return Q_ERR_ARENA_OOM;
     }
     
-    init_layer_scratchpad(&scratch, scratch_mem, &model->config, seq_len);
+    // CRITICAL: Inicializar com verificação de erro
+    ret = init_layer_scratchpad(&scratch, scratch_mem, &model->config, seq_len);
+    if (ret != Q_OK) return ret;
+
+    // Validação de Bounds Defensiva (Double Check)
+    uintptr_t mem_start = (uintptr_t)scratch_mem;
+    uintptr_t mem_end = mem_start + scratchpad_size;
+
+    size_t dim_sz_bytes;
+    if (!safe_mul(&dim_sz_bytes, (size_t)model->config.dim, sizeof(float))) return Q_ERR_OVERFLOW;
+    size_t last_token_aligned_sz = safe_align_size(dim_sz_bytes);
+    if (last_token_aligned_sz == 0) return Q_ERR_OVERFLOW;
+
+    uintptr_t last_buf_start = (uintptr_t)scratch.last_token_buf;
+    if (last_buf_start < mem_start) return Q_ERR_INVALID_ARG; // Sanity check
+
+    // Check overflow: last_buf_start + last_token_aligned_sz
+    // Use SIZE_MAX as upper bound (more portable than UINTPTR_MAX)
+    if ((size_t)last_buf_start > SIZE_MAX - last_token_aligned_sz) return Q_ERR_OVERFLOW;
+    uintptr_t last_buf_end = last_buf_start + last_token_aligned_sz;
+
+    if (last_buf_end > mem_end) {
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: Scratchpad bounds violation! End: %zu, Limit: %zu\n", last_buf_end, mem_end);
+        abort();
+        #endif
+        return Q_ERR_OVERFLOW;
+    }
     
     // Buffers ping-pong para saída de camada (reutilização eficiente)
     size_t layer_buf_size = (size_t)seq_len * (size_t)dim * sizeof(float);
@@ -1603,22 +1800,15 @@ q_error_code llama_forward(
     // For last token only (incremental generation: seq_len == 1)
     // For prefill (seq_len > 1), we only need logits for last position
     
-    // CRITICAL FIX: Ensure last_token is 32-byte aligned
-    // Always allocate aligned buffer to guarantee alignment, regardless of theoretical calculation
-    // This avoids issues with pointer arithmetic that may not reflect actual memory alignment
+    // CRITICAL FIX: Usar buffer reutilizável do scratchpad (evita alocação no hot path)
     const float* last_token_ptr = x_final + (size_t)(seq_len - 1) * dim;
     
-    // Always allocate aligned buffer for last_token to guarantee 32-byte alignment
-    // This is safer than relying on pointer arithmetic which may not reflect actual memory alignment
-    size_t aligned_size = Q_ALIGN_SIZE(dim * sizeof(float));
-    float* last_token_aligned = (float*)q_arena_alloc(ctx, aligned_size);
-    if (last_token_aligned == NULL) {
-        return Q_ERR_ARENA_OOM;
-    }
+    // Validação paranoica
+    if (scratch.last_token_buf == NULL) return Q_ERR_INVALID_ARG;
     
-    // Copy last token to aligned buffer
-    memcpy(last_token_aligned, last_token_ptr, dim * sizeof(float));
-    const float* last_token = last_token_aligned;
+    // Copiar para o buffer reutilizável do scratchpad
+    memcpy(scratch.last_token_buf, last_token_ptr, dim * sizeof(float));
+    const float* last_token = scratch.last_token_buf;
     
     // Create tensor view for last token [1, dim]
     q_tensor last_token_tensor = {
@@ -1627,20 +1817,6 @@ q_error_code llama_forward(
         .nb = {dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
-    
-    // DEBUG: Verify alignment of last_token (always print, not just in DEBUG mode)
-    uintptr_t last_token_addr = (uintptr_t)last_token;
-    fprintf(stderr, "DEBUG: llama_forward: last_token alignment check:\n");
-    fprintf(stderr, "  last_token=%p, addr=%zu\n", (void*)last_token, last_token_addr);
-    fprintf(stderr, "  last_token %% 32 = %zu\n", last_token_addr % 32);
-    fprintf(stderr, "  last_token %% 64 = %zu\n", last_token_addr % 64);
-    fprintf(stderr, "  last_token_tensor.nb[0]=%zu, nb[0] %% 32 = %zu\n", 
-            last_token_tensor.nb[0], last_token_tensor.nb[0] % 32);
-    
-    // CRITICAL FIX: For transposed tensors (B->nb[0] == sizeof(float)),
-    // we cannot guarantee alignment of all elements.
-    // q_matmul_f32_avx2 will detect this and use unaligned loads automatically.
-    // No need to validate base pointer alignment here - let q_matmul_f32_avx2 handle it.
     
     // Create transposed view of output: [vocab_size, dim] -> [dim, vocab_size]
     // This allows us to compute: last_token [1, dim] @ output^T [dim, vocab_size] -> logits [1, vocab_size]
@@ -1651,14 +1827,6 @@ q_error_code llama_forward(
         .type = Q_F32
     };
     
-    // DEBUG: Verify alignment of output tensor (always print)
-    uintptr_t output_addr = (uintptr_t)model->output->data;
-    fprintf(stderr, "DEBUG: llama_forward: output_t_tensor alignment check:\n");
-    fprintf(stderr, "  output->data=%p, addr=%zu\n", model->output->data, output_addr);
-    fprintf(stderr, "  output %% 32 = %zu\n", output_addr % 32);
-    fprintf(stderr, "  output_t_tensor.nb[0]=%zu, nb[0] %% 32 = %zu\n", 
-            output_t_tensor.nb[0], output_t_tensor.nb[0] % 32);
-    
     // Create tensor view for logits [1, vocab_size]
     q_tensor logits_tensor = {
         .data = (void*)logits,
@@ -1666,14 +1834,6 @@ q_error_code llama_forward(
         .nb = {vocab_size * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
         .type = Q_F32
     };
-    
-    // DEBUG: Verify alignment of logits tensor (always print)
-    uintptr_t logits_addr = (uintptr_t)logits;
-    fprintf(stderr, "DEBUG: llama_forward: logits_tensor alignment check:\n");
-    fprintf(stderr, "  logits=%p, addr=%zu\n", (void*)logits, logits_addr);
-    fprintf(stderr, "  logits %% 32 = %zu\n", logits_addr % 32);
-    fprintf(stderr, "  logits_tensor.nb[0]=%zu, nb[0] %% 32 = %zu\n", 
-            logits_tensor.nb[0], logits_tensor.nb[0] % 32);
     
     // Compute: last_token [1, dim] @ output^T [dim, vocab_size] -> logits [1, vocab_size]
     ret = q_matmul_f32_avx2(&last_token_tensor, &output_t_tensor, &logits_tensor, ctx);

@@ -286,7 +286,11 @@ static void test_aliasing_x_output(void) {
     float x_orig[8];
     memcpy(x_orig, x, sizeof(x));
     
+    // Test aliasing intentionally (adversarial test)
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wrestrict"
     q_error_code ret = q_rope_f32_avx2(x, cos, sin, x, 8);
+    #pragma GCC diagnostic pop
     
     // Check if function handles aliasing correctly
     if (ret == Q_OK) {

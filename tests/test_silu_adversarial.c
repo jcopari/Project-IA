@@ -192,7 +192,11 @@ static void test_aliasing_x_output(void) {
     
     float x[8] __attribute__((aligned(64))) = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
     
+    // Test aliasing intentionally (adversarial test)
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wrestrict"
     q_error_code ret = q_silu_f32_avx2(x, x, 8);
+    #pragma GCC diagnostic pop
     
     // Function should handle aliasing correctly
     if (ret == Q_OK) {

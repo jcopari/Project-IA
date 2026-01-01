@@ -531,7 +531,6 @@ static void test_inf_scale(void) {
         // Inf * anything = Inf (expected behavior)
         // However, (8-8) * Inf = 0 * Inf = NaN (IEEE 754 standard)
         // Function should not crash, Inf or NaN output is acceptable for extreme cases
-        bool handled = true;
         for (uint32_t i = 0; i < 32; i++) {
             // Accept Inf or NaN as valid output for extreme scale values
             // This is expected IEEE 754 behavior: 0 * Inf = NaN

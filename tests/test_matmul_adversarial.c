@@ -305,8 +305,8 @@ static void test_tail_cases(gemv_func_t func) {
         weights.type = Q_Q4_0;
         
         // Initialize blocks
-        for (uint32_t i = 0; i < M * blocks_per_row; i++) {
-            generate_block_pattern(&blocks[i], 0.1f + (i % 10) * 0.1f, 4);
+        for (uint32_t j = 0; j < M * blocks_per_row; j++) {
+            generate_block_pattern(&blocks[j], 0.1f + (j % 10) * 0.1f, 4);
         }
         generate_input_pattern(input, N, 7);
         
@@ -393,12 +393,16 @@ static void test_extreme_scales(gemv_func_t func) {
             int nan_inf = check_nan_inf(output_test, M);
             if (nan_inf > 0) {
                 // For extreme scales, NaN/Inf might be acceptable
+                // Adversarial test: intentional float comparison
+                #pragma GCC diagnostic push
+                #pragma GCC diagnostic ignored "-Wfloat-equal"
                 if (scales[s].scale == 0.0f || scales[s].scale < 0 || 
                     scales[s].scale == FLT_MAX || scales[s].scale == 1e10f) {
                     TEST_PASS(); // Expected behavior
                 } else {
                     TEST_FAIL("Unexpected NaN/Inf");
                 }
+                #pragma GCC diagnostic pop
             } else {
                 int errors = compare_results(output_ref, output_test, M, 1.5e-4f, Q_EPSILON_REL_F32);
                 if (errors == 0) {
@@ -611,6 +615,9 @@ cleanup:
 }
 
 // Test 7: Misaligned memory (should still work with unaligned loads)
+// Suppress clobbered warning for this function (variables are safe, allocated before setjmp)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wclobbered"
 static void test_misaligned_memory(gemv_func_t func) {
     TEST_START("Misaligned memory (unaligned input/output)");
     
@@ -632,6 +639,8 @@ static void test_misaligned_memory(gemv_func_t func) {
     q_block_q4_0* blocks = (q_block_q4_0*)(blocks_raw + 1);
     float* input = (float*)(input_raw + 1);
     float* output = (float*)(output_raw + 1);
+    
+    // Allocate output_ref before setjmp (safe)
     float* output_ref = (float*)aligned_alloc(Q_ALIGN, M * sizeof(float));
     
     if (!output_ref) {
@@ -645,8 +654,8 @@ static void test_misaligned_memory(gemv_func_t func) {
     weights.ne[1] = N;
     weights.type = Q_Q4_0;
     
-    for (uint32_t i = 0; i < M * blocks_per_row; i++) {
-        generate_block_pattern(&blocks[i], 1.0f, 4);
+    for (uint32_t j = 0; j < M * blocks_per_row; j++) {
+        generate_block_pattern(&blocks[j], 1.0f, 4);
     }
     generate_input_pattern(input, N, 7);
     
@@ -677,6 +686,7 @@ cleanup:
     free(output_raw);
     free(output_ref);
 }
+#pragma GCC diagnostic pop
 
 // Test 8: Null pointer checks (should crash gracefully)
 static void test_null_pointers(gemv_func_t func) {
