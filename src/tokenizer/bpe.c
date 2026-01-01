@@ -134,7 +134,7 @@ q_error_code q_tokenizer_load(q_tokenizer* restrict tok, const char* tokenizer_p
     for (uint32_t i = 0; i < tok->vocab_size; i++) {
         uint8_t length;
         err = read_u8(f, &length);
-        if (err != Q_OK || length == 0 || length > 255) {
+        if (err != Q_OK || length == 0) {
             // Cleanup on error
             for (uint32_t j = 0; j < i; j++) {
                 free(tok->vocab[j]);

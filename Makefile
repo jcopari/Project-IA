@@ -1,46 +1,137 @@
 # Build System para Qorus-IA v2.0
 # Flags: -O3 -mavx2 -mfma (AVX2 + FMA for optimal SIMD performance)
 # Debug: make DEBUG=1 (enables AddressSanitizer + UndefinedBehaviorSanitizer)
+# Sanitizers: make SANITIZE=1 (enables ASan + UBSan + TSan)
+# Static Analysis: make ANALYZE=1 (enables static analysis warnings)
 
 CC = gcc
 
-# Flags base (comuns)
-CFLAGS_COMMON = -std=c11 -Wall -Wextra -I./include -D_GNU_SOURCE
+# Detecção automática de versão do GCC para flags específicas (executado apenas uma vez)
+GCC_FULL_VERSION := $(shell $(CC) -dumpversion 2>/dev/null || echo "0.0.0")
+GCC_VERSION := $(shell echo "$(GCC_FULL_VERSION)" | cut -d. -f1)
+GCC_MINOR := $(shell echo "$(GCC_FULL_VERSION)" | cut -d. -f2)
+
+# Flags base (comuns) - CORRIGIDO: removido espaço em -Werror
+CFLAGS_COMMON = -std=c11 -Wall -Wextra -Werror -I./include -D_GNU_SOURCE
+
+# Flags de qualidade adicionais (warnings extras)
+# NOTE: Flags removidas por serem muito restritivas para código legítimo:
+#   -Wtraditional-conversion: muito restritivo para builtins do GCC
+#   -Wsign-conversion: muito restritivo para código de sistema (mmap, st_size, etc)
+#   -Wconversion: muito restritivo, mantemos apenas warnings específicos
+#   -Wcast-qual: muito restritivo para casts legítimos de const
+#   -Wrestrict: muito restritivo, pode ser falso positivo em alguns casos
+#   -Wformat=2: muito restritivo, mantemos apenas -Wformat-security
+CFLAGS_QUALITY = \
+	-Wpedantic \
+	-Wformat-security \
+	-Wcast-align \
+	-Wstrict-prototypes \
+	-Wmissing-prototypes \
+	-Wmissing-declarations \
+	-Wuninitialized \
+	-Winit-self \
+	-Wshadow \
+	-Wpointer-arith \
+	-Wstrict-aliasing=2 \
+	-Wundef \
+	-Wunused \
+	-Wunused-result \
+	-Warray-bounds=2 \
+	-Wimplicit-fallthrough=3 \
+	-Wlogical-op \
+	-Wduplicated-cond \
+	-Wduplicated-branches \
+	-Wnull-dereference \
+	-Wstack-usage=8192 \
+	-Wtrampolines \
+	-Wfloat-equal
+
+# Flags específicas do GCC 8+ (melhor detecção)
+# Validação: GCC_VERSION deve ser numérico e >= 8
+# NOTE: -Wrestrict removido: muito restritivo, pode ser falso positivo
+ifeq ($(shell [ -n "$(GCC_VERSION)" ] && [ "$(GCC_VERSION)" -ge 8 ] 2>/dev/null && echo 1),1)
+	CFLAGS_QUALITY += -Wformat-overflow=2 -Wformat-truncation=2
+endif
+
+# Flags específicas do GCC 10+ (análise estática melhorada)
+ifeq ($(shell [ -n "$(GCC_VERSION)" ] && [ "$(GCC_VERSION)" -ge 10 ] 2>/dev/null && echo 1),1)
+	CFLAGS_QUALITY += -Warith-conversion -Wanalyzer-too-complex
+endif
 
 # Modo Release (Padrão: Performance Máxima)
-CFLAGS_RELEASE = -O3 -mavx2 -mfma -fno-omit-frame-pointer
-LDFLAGS_RELEASE = -lm
+# NOTE: -fstrict-aliasing removido: pode causar UB se código violar strict aliasing rules
+#       Use apenas se código seguir strict aliasing (ponteiros de tipos diferentes não se sobrepõem)
+CFLAGS_RELEASE = -O3 -mavx2 -mfma -fno-omit-frame-pointer \
+	-fno-strict-overflow -fstack-protector-strong
+
+LDFLAGS_RELEASE = -lm -fstack-protector-strong
 
 # Modo Debug (Segurança Máxima + ASan + UBSan)
 # NOTE: AVX2 flags are required even in DEBUG mode for intrinsics to compile
-# NOTE: Sanitizers disabled for now to allow debug output
-CFLAGS_DEBUG = -O0 -g -mavx2 -mfma -fno-omit-frame-pointer -DDEBUG
-LDFLAGS_DEBUG = -lm
+CFLAGS_DEBUG = -O0 -g3 -mavx2 -mfma -fno-omit-frame-pointer -DDEBUG \
+	-fsanitize=undefined -fsanitize=address -fsanitize-address-use-after-scope \
+	-fno-common -fstack-protector-all
+
+LDFLAGS_DEBUG = -lm -fsanitize=undefined -fsanitize=address
+
+# Modo Sanitize (apenas sanitizers, sem debug completo)
+ifeq ($(SANITIZE),1)
+	CFLAGS_SANITIZE = -O1 -g -mavx2 -mfma -fno-omit-frame-pointer \
+		-fsanitize=undefined -fsanitize=address -fsanitize-address-use-after-scope \
+		-fsanitize=thread -fno-common
+	LDFLAGS_SANITIZE = -lm -fsanitize=undefined -fsanitize=address -fsanitize=thread
+endif
+
+# Modo Static Analysis (análise estática com GCC analyzer)
+ifeq ($(ANALYZE),1)
+	CFLAGS_ANALYZE = -O0 -g -mavx2 -mfma -fanalyzer -Wanalyzer-too-complex \
+		-Wanalyzer-malloc-leak -Wanalyzer-double-free -Wanalyzer-use-after-free \
+		-Wanalyzer-null-dereference -Wanalyzer-use-of-uninitialized-value
+	LDFLAGS_ANALYZE = -lm
+endif
 
 # Seletor baseado em variável de ambiente
 ifeq ($(DEBUG),1)
-    CFLAGS = $(CFLAGS_COMMON) $(CFLAGS_DEBUG)
-    LDFLAGS = $(LDFLAGS_DEBUG)
+	CFLAGS = $(CFLAGS_COMMON) $(CFLAGS_QUALITY) $(CFLAGS_DEBUG)
+	LDFLAGS = $(LDFLAGS_DEBUG)
+else ifeq ($(SANITIZE),1)
+	CFLAGS = $(CFLAGS_COMMON) $(CFLAGS_QUALITY) $(CFLAGS_SANITIZE)
+	LDFLAGS = $(LDFLAGS_SANITIZE)
+else ifeq ($(ANALYZE),1)
+	CFLAGS = $(CFLAGS_COMMON) $(CFLAGS_QUALITY) $(CFLAGS_ANALYZE)
+	LDFLAGS = $(LDFLAGS_ANALYZE)
 else
-    CFLAGS = $(CFLAGS_COMMON) $(CFLAGS_RELEASE)
-    LDFLAGS = $(LDFLAGS_RELEASE)
+	CFLAGS = $(CFLAGS_COMMON) $(CFLAGS_QUALITY) $(CFLAGS_RELEASE)
+	LDFLAGS = $(LDFLAGS_RELEASE)
 endif
 
-# Diretórios
+# Diretórios (detecção automática melhorada)
 SRC_DIR = src
 BUILD_DIR = build
 INCLUDE_DIR = include
 TESTS_DIR = tests
 
-# Arquivos fonte
-CORE_SRCS = $(wildcard $(SRC_DIR)/core/*.c)
-OPS_AVX2_SRCS = $(filter-out %_ref.c, $(wildcard $(SRC_DIR)/ops/avx2/*.c))
-OPS_CPU_SRCS = $(wildcard $(SRC_DIR)/ops/cpu/*.c)
-MODELS_SRCS = $(wildcard $(SRC_DIR)/models/*.c)
-TOKENIZER_SRCS = $(wildcard $(SRC_DIR)/tokenizer/*.c)
+# Detecção automática de todos os diretórios de código fonte
+SRC_DIRS := $(shell find $(SRC_DIR) -type d 2>/dev/null)
+BUILD_SUBDIRS := $(patsubst $(SRC_DIR)/%,$(BUILD_DIR)/%,$(SRC_DIRS))
 
-ALL_SRCS = $(CORE_SRCS) $(OPS_AVX2_SRCS) $(OPS_CPU_SRCS) $(MODELS_SRCS) $(TOKENIZER_SRCS)
+# Detecção automática de arquivos fonte (qualquer .c em subdiretórios de src/)
+# Filtra arquivos de referência e testes, ordena para builds determinísticos
+# Complexidade: O(n log n) - aceitável para detecção automática
+ALL_SRCS := $(shell find $(SRC_DIR) -name "*.c" -type f 2>/dev/null | \
+	grep -v "_ref.c" | grep -v "/test" | sort)
+
+# Validação: garantir que encontramos pelo menos alguns arquivos
+ifeq ($(ALL_SRCS),)
+	$(warning Nenhum arquivo .c encontrado em $(SRC_DIR))
+	ALL_SRCS := $(wildcard $(SRC_DIR)/**/*.c)
+endif
+
 OBJS = $(ALL_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+
+# Geração automática de dependências (detecção de headers)
+DEPFILES = $(OBJS:.o=.d)
 
 # Target principal
 TARGET = qorus-ia
@@ -52,32 +143,52 @@ BENCHMARK_TARGET = tools/benchmark
 TEST_SRCS = $(wildcard $(TESTS_DIR)/*.c)
 TEST_TARGETS = $(TEST_SRCS:$(TESTS_DIR)/%.c=$(BUILD_DIR)/tests/%)
 
-.PHONY: all clean directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial benchmark
+.PHONY: all clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial benchmark analyze check-syntax
 
 all: directories $(TARGET)
 
+# Criação automática de diretórios baseada em estrutura de src/
 directories:
-	@mkdir -p $(BUILD_DIR)/core
-	@mkdir -p $(BUILD_DIR)/ops/avx2
-	@mkdir -p $(BUILD_DIR)/ops/cpu
-	@mkdir -p $(BUILD_DIR)/models
-	@mkdir -p $(BUILD_DIR)/tokenizer
+	@mkdir -p $(BUILD_SUBDIRS)
 	@mkdir -p $(BUILD_DIR)/tests
+	@echo "✓ Diretórios criados automaticamente"
+
+# Incluir arquivos de dependência gerados automaticamente
+-include $(DEPFILES)
 
 $(TARGET): $(OBJS)
 	$(CC) $(OBJS) -o $@ $(LDFLAGS)
+	@echo "✓ Build completo: $(TARGET)"
 
 # Benchmark tool
 $(BENCHMARK_TARGET): tools/benchmark.c $(OBJS)
 	$(CC) $(CFLAGS) -DDEBUG $< $(OBJS) -o $@ $(LDFLAGS)
 
+# Regra com geração automática de dependências (detecção de headers)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Regra para testes
 $(BUILD_DIR)/tests/%: $(TESTS_DIR)/%.c $(OBJS)
 	@mkdir -p $(BUILD_DIR)/tests
 	$(CC) $(CFLAGS) -DDEBUG $< $(OBJS) -o $@ $(LDFLAGS)
+
+# Target para verificação de sintaxe (sem compilar)
+check-syntax:
+	@echo "Verificando sintaxe de todos os arquivos..."
+	@for file in $(ALL_SRCS); do \
+		echo "Checking $$file..."; \
+		$(CC) $(CFLAGS) -fsyntax-only $$file || exit 1; \
+	done
+	@echo "✓ Sintaxe OK"
+
+# Target para análise estática (requer GCC 10+)
+analyze:
+	@echo "Executando análise estática..."
+	@$(MAKE) clean
+	@$(MAKE) ANALYZE=1 all 2>&1 | tee static-analysis.log || true
+	@echo "✓ Análise estática concluída (ver static-analysis.log)"
 
 # Target de teste específico
 test-memory: directories $(BUILD_DIR)/tests/test_memory
@@ -225,12 +336,27 @@ test-validation: clean
 	@$(MAKE) test-add-f32 DEBUG=1
 	@$(MAKE) test-mul-f32 DEBUG=1
 	@echo "\n✓ All tests passed (Release + Debug with sanitizers)"
+	@$(MAKE) clean-test-artifacts
 
 test: test-memory test-dequantize test-matmul test-ops
+	@$(MAKE) clean-test-artifacts
 
 benchmark: directories $(BENCHMARK_TARGET)
 	@echo "Running performance benchmarks..."
 	@$(BENCHMARK_TARGET)
 
+# Limpeza de arquivos objeto (.o) e dependências (.d)
+clean-objs:
+	@echo "Limpando arquivos objeto e dependências..."
+	@find $(BUILD_DIR) -name "*.o" -type f -delete 2>/dev/null || true
+	@find $(BUILD_DIR) -name "*.d" -type f -delete 2>/dev/null || true
+	@echo "✓ Arquivos .o e .d removidos"
+
+# Limpeza de artefatos de teste (objetos + modelos dummy)
+clean-test-artifacts: clean-objs
+	@echo "Limpando artefatos de teste..."
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+	@echo "✓ Artefatos de teste removidos (.o, .d, model_dummy.qorus, tokenizer.bin)"
+
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) $(BENCHMARK_TARGET) model_dummy.qorus tokenizer.bin
+	rm -rf $(BUILD_DIR) $(TARGET) $(BENCHMARK_TARGET) model_dummy.qorus tokenizer.bin static-analysis.log

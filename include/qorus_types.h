@@ -110,7 +110,7 @@ typedef enum {
         uintptr_t misalignment = ptr_addr % 32; \
         if (misalignment != 0) { \
             fprintf(stderr, "ERROR: Q_VALIDATE_ALIGNED_OR_RETURN failed at %s:%d\n", __FILE__, __LINE__); \
-            fprintf(stderr, "  ptr=%p, addr=%zu, %% 32 = %zu\n", (ptr), ptr_addr, misalignment); \
+            fprintf(stderr, "  ptr=%p, addr=%zu, %% 32 = %zu\n", (void*)(ptr), ptr_addr, misalignment); \
             return (error_code); \
         } \
     } while (0)

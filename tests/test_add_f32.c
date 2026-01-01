@@ -10,9 +10,9 @@
 
 // Reference implementation (scalar, slow but correct)
 static void add_f32_ref(
-    const float* restrict a,
-    const float* restrict b,
-    float* restrict output,
+    const float* a,
+    const float* b,
+    float* output,
     uint32_t N
 ) {
     for (uint32_t i = 0; i < N; i++) {

@@ -1199,8 +1199,13 @@ static q_error_code llama_attention_forward(
             float* row_ptr = &scratch->scores_buf[i * scratch->scores_stride_floats];
             
             // Call softmax in-place (input e output são o mesmo buffer)
-            // Usar cast para evitar warning de aliasing (é seguro aqui pois é in-place)
-            ret = q_softmax_f32_avx2(row_ptr, (float* __restrict__)row_ptr, seq_len);
+            // Criar cópia temporária para evitar violação de restrict
+            float* temp_row = &probs_buf[i * scratch->scores_stride_floats];
+            // Copiar dados para buffer temporário
+            for (uint32_t j = 0; j < seq_len; j++) {
+                temp_row[j] = row_ptr[j];
+            }
+            ret = q_softmax_f32_avx2(temp_row, row_ptr, seq_len);
             if (ret != Q_OK) {
                 #ifdef DEBUG
                 fprintf(stderr, "ERROR: Softmax failed at row %u: ret=%d\n", i, ret);
@@ -1618,7 +1623,7 @@ q_error_code llama_forward(
     // DEBUG: Verify alignment of last_token (always print, not just in DEBUG mode)
     uintptr_t last_token_addr = (uintptr_t)last_token;
     fprintf(stderr, "DEBUG: llama_forward: last_token alignment check:\n");
-    fprintf(stderr, "  last_token=%p, addr=%zu\n", last_token, last_token_addr);
+    fprintf(stderr, "  last_token=%p, addr=%zu\n", (void*)last_token, last_token_addr);
     fprintf(stderr, "  last_token %% 32 = %zu\n", last_token_addr % 32);
     fprintf(stderr, "  last_token %% 64 = %zu\n", last_token_addr % 64);
     fprintf(stderr, "  last_token_tensor.nb[0]=%zu, nb[0] %% 32 = %zu\n", 
@@ -1657,7 +1662,7 @@ q_error_code llama_forward(
     // DEBUG: Verify alignment of logits tensor (always print)
     uintptr_t logits_addr = (uintptr_t)logits;
     fprintf(stderr, "DEBUG: llama_forward: logits_tensor alignment check:\n");
-    fprintf(stderr, "  logits=%p, addr=%zu\n", logits, logits_addr);
+    fprintf(stderr, "  logits=%p, addr=%zu\n", (void*)logits, logits_addr);
     fprintf(stderr, "  logits %% 32 = %zu\n", logits_addr % 32);
     fprintf(stderr, "  logits_tensor.nb[0]=%zu, nb[0] %% 32 = %zu\n", 
             logits_tensor.nb[0], logits_tensor.nb[0] % 32);
