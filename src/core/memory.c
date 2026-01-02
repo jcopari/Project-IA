@@ -9,6 +9,16 @@
 #include <stdint.h>
 #include <limits.h>
 
+// === PLATFORM ABSTRACTION LAYER ===
+#ifdef _WIN32
+    #include <malloc.h>
+    #define q_aligned_alloc(align, size) _aligned_malloc(size, align)
+    #define q_aligned_free(ptr) _aligned_free(ptr)
+#else
+    #define q_aligned_alloc(align, size) aligned_alloc(align, size)
+    #define q_aligned_free(ptr) free(ptr)
+#endif
+
 // Definições de compatibilidade multiplataforma
 #ifndef MAP_POPULATE
 #define MAP_POPULATE 0
@@ -137,7 +147,8 @@ q_error_code q_alloc_kv_cache(q_context* restrict ctx, size_t kv_size) {
         return Q_ERR_OVERFLOW;
     }
     
-    void* kv_buf = aligned_alloc(Q_ALIGN, aligned_size);
+    // Use platform abstraction wrapper
+    void* kv_buf = q_aligned_alloc(Q_ALIGN, aligned_size);
     if (!kv_buf) {
         return Q_ERR_ALLOC_FAILED;
     }
@@ -168,7 +179,8 @@ q_error_code q_alloc_arena(q_context* restrict ctx, size_t arena_size) {
         return Q_ERR_OVERFLOW;
     }
     
-    void* arena_buf = aligned_alloc(Q_ALIGN, aligned_size);
+    // Use platform abstraction wrapper
+    void* arena_buf = q_aligned_alloc(Q_ALIGN, aligned_size);
     if (!arena_buf) {
         return Q_ERR_ALLOC_FAILED;
     }
@@ -258,6 +270,7 @@ void* q_arena_alloc(q_context* restrict ctx, size_t size) {
 }
 
 // Reset arena (com poisoning seguro e otimizado)
+// CORREÇÃO CRÍTICA: Validação de underflow antes da subtração
 // CORREÇÃO 5: Resetar apenas para scratch_base_offset, não para 0
 // Isso protege estruturas do modelo alocadas antes do scratchpad
 void q_arena_reset(q_context* restrict ctx) {
@@ -275,6 +288,14 @@ void q_arena_reset(q_context* restrict ctx) {
     if (ctx->scratch_buffer == NULL) {
         ctx->scratch_head = ctx->scratch_base_offset;
         return;
+    }
+    
+    // SECURITY FIX: Prevent Integer Underflow
+    // Validate invariant before subtraction to prevent silent corruption
+    if (__builtin_expect(ctx->scratch_head < ctx->scratch_base_offset, 0)) {
+        fprintf(stderr, "CRITICAL: Memory corruption in Arena! head(%zu) < base(%zu)\n",
+                ctx->scratch_head, ctx->scratch_base_offset);
+        abort(); // Fail fast to prevent exploiting the corrupted state
     }
     
     // Calculate poison_size safely (apenas a parte do scratchpad, não o modelo)
@@ -320,7 +341,7 @@ void q_free_memory(q_context* restrict ctx) {
     
     // 1. Free arena (allocated last)
     if (ctx->scratch_buffer) {
-        free(ctx->scratch_buffer);
+        q_aligned_free(ctx->scratch_buffer); // Use platform abstraction wrapper
         ctx->scratch_buffer = NULL;
         ctx->scratch_size = 0;
         ctx->scratch_head = 0;
@@ -329,7 +350,7 @@ void q_free_memory(q_context* restrict ctx) {
     
     // 2. Free KV cache (allocated second)
     if (ctx->kv_buffer) {
-        free(ctx->kv_buffer);
+        q_aligned_free(ctx->kv_buffer); // Use platform abstraction wrapper
         ctx->kv_buffer = NULL;
         ctx->kv_size = 0;
     }

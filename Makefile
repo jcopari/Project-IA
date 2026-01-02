@@ -148,7 +148,7 @@ BENCHMARK_TARGET = tools/benchmark
 TEST_SRCS = $(wildcard $(TESTS_DIR)/*.c)
 TEST_TARGETS = $(TEST_SRCS:$(TESTS_DIR)/%.c=$(BUILD_DIR)/tests/%)
 
-.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-integration-e2e test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme benchmark analyze analyze-cppcheck analyze-clang-tidy analyze-complete check-syntax
+.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-integration-e2e test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme test-llama-scratchpad test-llama-kv-cache test-llama-rope test-llama-token-embedding test-llama-free benchmark analyze analyze-cppcheck analyze-clang-tidy analyze-complete check-syntax
 
 # Target para compilar apenas objetos (sem executável) - útil para bibliotecas
 objects: directories $(OBJS)
@@ -409,6 +409,41 @@ test-llama-cleanup: directories $(BUILD_DIR)/tests/test_llama_cleanup
 	@$(BUILD_DIR)/tests/test_llama_cleanup || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
 	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
 
+test-llama-scratchpad: directories $(BUILD_DIR)/tests/test_llama_scratchpad
+	@echo "Gerando modelo dummy..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@echo "Executando testes adversarial de scratchpad..."
+	@$(BUILD_DIR)/tests/test_llama_scratchpad || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-llama-kv-cache: directories $(BUILD_DIR)/tests/test_llama_kv_cache
+	@echo "Gerando modelo dummy..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@echo "Executando testes adversarial de KV cache..."
+	@$(BUILD_DIR)/tests/test_llama_kv_cache || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-llama-rope: directories $(BUILD_DIR)/tests/test_llama_rope
+	@echo "Gerando modelo dummy..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@echo "Executando testes adversarial de RoPE..."
+	@$(BUILD_DIR)/tests/test_llama_rope || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-llama-token-embedding: directories $(BUILD_DIR)/tests/test_llama_token_embedding
+	@echo "Gerando modelo dummy..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@echo "Executando testes adversarial de token embedding..."
+	@$(BUILD_DIR)/tests/test_llama_token_embedding || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-llama-free: directories $(BUILD_DIR)/tests/test_llama_free
+	@echo "Gerando modelo dummy..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@echo "Executando testes adversarial de llama_free_graph..."
+	@$(BUILD_DIR)/tests/test_llama_free || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
 test-integration-e2e: directories $(BUILD_DIR)/tests/test_integration_e2e
 	@echo "Gerando modelo dummy e tokenizer..."
 	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
@@ -436,7 +471,7 @@ test-edge-cases-extreme: directories $(BUILD_DIR)/tests/test_edge_cases_extreme
 	@$(BUILD_DIR)/tests/test_edge_cases_extreme || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
 	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
 
-test-adversarial-all: test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-matmul-adversarial test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme
+test-adversarial-all: test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-matmul-adversarial test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme test-llama-scratchpad test-llama-kv-cache test-llama-rope test-llama-token-embedding test-llama-free
 	@echo "✓ Todos os testes adversarial concluídos"
 
 test-integration-all: test-ops-integration

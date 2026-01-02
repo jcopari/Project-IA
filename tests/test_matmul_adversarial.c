@@ -614,12 +614,13 @@ cleanup:
     free(output_test);
 }
 
-// Test 7: Misaligned memory (should still work with unaligned loads)
-// Suppress clobbered warning for this function (variables are safe, allocated before setjmp)
+// Test 7: Misaligned memory (should reject with Q_ERR_MISALIGNED)
+// CRITICAL FIX: Function correctly rejects misaligned memory in Release mode
+// (aborts in DEBUG mode). Test must verify return code, not compare results.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wclobbered"
 static void test_misaligned_memory(gemv_func_t func) {
-    TEST_START("Misaligned memory (unaligned input/output)");
+    TEST_START("Misaligned memory (should reject with Q_ERR_MISALIGNED)");
     
     const uint32_t M = 4;
     const uint32_t N = 128;
@@ -640,51 +641,42 @@ static void test_misaligned_memory(gemv_func_t func) {
     float* input = (float*)(input_raw + 1);
     float* output = (float*)(output_raw + 1);
     
-    // Allocate output_ref before setjmp (safe)
-    float* output_ref = (float*)aligned_alloc(Q_ALIGN, M * sizeof(float));
-    
-    if (!output_ref) {
-        TEST_FAIL("Memory allocation failed");
-        goto cleanup;
-    }
-    
     q_tensor weights = {0};
     weights.data = blocks;
     weights.ne[0] = M;
     weights.ne[1] = N;
     weights.type = Q_Q4_0;
     
+    // Initialize data (for completeness, though function won't execute)
     for (uint32_t j = 0; j < M * blocks_per_row; j++) {
         generate_block_pattern(&blocks[j], 1.0f, 4);
     }
     generate_input_pattern(input, N, 7);
     
-    gemv_q4_f32_ref(&weights, input, output_ref);
+    // CRITICAL FIX: Check return code instead of comparing results
+    // Q_VALIDATE_ALIGNED_OR_RETURN always returns error code (doesn't abort)
+    // Function correctly rejects misaligned memory in both DEBUG and Release modes
+    q_error_code ret = func(&weights, input, output);
     
-    // Note: This might crash due to Q_ASSERT_ALIGNED, which is expected
-    if (setjmp(crash_jmp_buf) == 0) {
-        signal(SIGSEGV, crash_handler);
-        signal(SIGBUS, crash_handler);
-        func(&weights, input, output);
-        signal(SIGSEGV, SIG_DFL);
-        signal(SIGBUS, SIG_DFL);
-        
-        int errors = compare_results(output_ref, output, M, 1.5e-4f, Q_EPSILON_REL_F32);
-        if (errors == 0) {
-            TEST_PASS();
-        } else {
-            TEST_FAIL("Result mismatch");
-        }
+    if (ret == Q_ERR_MISALIGNED) {
+        // Expected behavior: function correctly rejects misaligned memory
+        TEST_PASS();
+    } else if (ret == Q_OK) {
+        // Unexpected: function accepted misaligned memory (should not happen)
+        TEST_FAIL("Function should reject misaligned memory");
     } else {
-        // Crash is expected due to alignment check
-        TEST_PASS(); // This is acceptable behavior
+        // Unexpected error code
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), 
+                 "Function should return Q_ERR_MISALIGNED, got %d (%s)", 
+                 ret, q_strerror(ret));
+        TEST_FAIL(err_msg);
     }
     
 cleanup:
     free(blocks_raw);
     free(input_raw);
     free(output_raw);
-    free(output_ref);
 }
 #pragma GCC diagnostic pop
 
