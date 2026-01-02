@@ -6,7 +6,7 @@ Este documento mapeia **TODAS** as funções executadas durante o forward pass d
 
 ## 1. ENTRADA: `llama_forward`
 
-**Localização:** `src/models/llama3.c:1435`
+**Localização:** `src/models/model.c:1435`
 
 **Chamada por:** Código externo (testes, aplicação)
 
@@ -80,7 +80,7 @@ llama_forward
 
 ## 2. CAMADA: `llama_layer_forward`
 
-**Localização:** `src/models/llama3.c:1319`
+**Localização:** `src/models/model.c:1319`
 
 **Chamada por:** `llama_forward` (loop pelas camadas)
 
@@ -160,7 +160,7 @@ llama_layer_forward
 
 ## 3. ATTENTION: `llama_attention_forward`
 
-**Localização:** `src/models/llama3.c:715`
+**Localização:** `src/models/model.c:715`
 
 **Chamada por:** `llama_layer_forward`
 
@@ -334,7 +334,7 @@ llama_attention_forward
 
 ## 4. MLP: `llama_mlp_forward`
 
-**Localização:** `src/models/llama3.c:1164`
+**Localização:** `src/models/model.c:1164`
 
 **Chamada por:** `llama_layer_forward`
 
@@ -665,7 +665,7 @@ llama_mlp_forward
 
 ### 6.1 `token_embedding_lookup`
 
-**Localização:** `src/models/llama3.c:640`
+**Localização:** `src/models/model.c:640`
 
 **Chamada por:** `llama_forward`
 
@@ -688,7 +688,7 @@ llama_mlp_forward
 
 ### 6.2 `get_kv_cache_ptr`
 
-**Localização:** `src/models/llama3.c:558`
+**Localização:** `src/models/model.c:558`
 
 **Chamada por:** `llama_attention_forward` (atualização do KV cache)
 
@@ -714,7 +714,7 @@ llama_mlp_forward
 
 ### 6.3 `generate_rope_cos_sin`
 
-**Localização:** `src/models/llama3.c:604`
+**Localização:** `src/models/model.c:604`
 
 **Chamada por:** `llama_attention_forward` (geração de tabelas RoPE)
 

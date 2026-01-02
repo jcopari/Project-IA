@@ -227,9 +227,9 @@ Este documento identifica funcionalidades implementadas que **NÃO estão sendo 
 - **Status**: Funções `static` não são testadas diretamente (esperado)
 - **Justificativa**: Funções estáticas são testadas indiretamente através das funções públicas que as utilizam
 - **Exemplos**:
-  - `read_u32()`, `read_u8()` em `bpe.c` - testadas via `q_tokenizer_load()`
+  - `read_u32()`, `read_u8()` em `dummy_tokenizer.c` - testadas via `q_tokenizer_load()`
   - `safe_align_size()`, `q_is_aligned()` em `memory.c` - testadas via `q_arena_alloc()`
-  - `check_size_t_mult_overflow()` em `llama3.c` - testadas via `llama_build_graph()`
+  - `check_size_t_mult_overflow()` em `model.c` - testadas via `llama_build_graph()`
 - **Recomendação**: Manter como está (testes indiretos são suficientes)
 
 ---

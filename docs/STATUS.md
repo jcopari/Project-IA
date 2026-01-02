@@ -1,7 +1,7 @@
 # Qorus-IA v2.0 - Project Status
 
 **Last Updated:** 2025-01-02  
-**Current Phase:** FASE 3.3 Complete (Forward Pass) + FASE 4.1 Complete (Tokenizer) + FASE 3.2 Complete + Low-Priority Technical Debt Resolved + Robustness Improvements Applied
+**Current Phase:** FASE 3.3 Complete (Forward Pass) + FASE 4.1 Complete (Dummy Tokenizer) + FASE 3.2 Complete + Low-Priority Technical Debt Resolved + Robustness Improvements Applied + Security Fixes Applied
 
 ---
 
@@ -44,6 +44,10 @@
   - Fused dequantization (no intermediate memory writes)
   - 4x loop unrolling (4 accumulators)
   - Horizontal reduction for final sum
+  - ✅ **Contiguity Validation (2025-01-02):** Critical validation that tensor is contiguous in memory
+    - Validates `nb[0] == expected_stride` before execution
+    - Fails with clear error if tensor is not contiguous (v1.0 limitation)
+    - Prevents invalid memory reads in non-contiguous views
 
 - ✅ **FASE 2.3: Normalization & Positional Encoding**
   - **RMSNorm** (`src/ops/avx2/rmsnorm.c`)
@@ -307,7 +311,7 @@ The following training components are planned for portation from MetaIA v1.4.0 t
 
 ### ✅ FASE 3: Model Architecture (Complete)
 
-- ✅ **FASE 3.3: Forward Pass** (`src/models/llama3.c`) - **COMPLETE** (2025-01-02)
+- ✅ **FASE 3.3: Forward Pass** (`src/models/model.c`) - **COMPLETE** (2025-01-02)
   - ✅ `llama_forward()` function implemented
   - ✅ Complete forward pass: Token embeddings → Layers → Final RMSNorm → LM Head
   - ✅ Attention forward pass with GQA support
@@ -324,7 +328,12 @@ The following training components are planned for portation from MetaIA v1.4.0 t
 
 ### ✅ FASE 4: Tokenizer & Main Loop (Partially Complete)
 
-- ✅ **BPE Tokenizer** (`src/tokenizer/bpe.c`) - **COMPLETE** (2025-01-02)
+- ✅ **Dummy Tokenizer** (`src/tokenizer/dummy_tokenizer.c`) - **COMPLETE** (2025-01-02)
+  - ⚠️ **IMPORTANT:** This is a **Dummy Tokenizer** (NOT real BPE) for testing only
+  - Does NOT implement BPE merge algorithm
+  - Maps bytes directly to token IDs
+  - Not suitable for production inference with real Transformer models
+  - Suitable for: Testing infrastructure, development/debugging
   - ✅ Load tokenizer from binary format (`q_tokenizer_load`)
   - ✅ Encode text → tokens (`q_tokenizer_encode`)
   - ✅ Decode tokens → text (`q_tokenizer_decode`)

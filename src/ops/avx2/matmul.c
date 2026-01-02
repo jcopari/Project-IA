@@ -176,6 +176,26 @@ q_error_code q_gemv_q4_f32_avx2(
         return Q_ERR_OVERFLOW;
     }
     
+    // ========================================================================
+    // CRITICAL SECURITY FIX: Contiguity Validation
+    // ========================================================================
+    // This kernel uses flat pointer arithmetic (i * blocks_per_row) which
+    // assumes the tensor is contiguous in memory. If the tensor is a non-contiguous
+    // view (e.g. slice), this would read invalid memory.
+    // We enforce nb[0] == expected_stride for v1.0.
+    size_t expected_stride = (size_t)blocks_per_row * sizeof(q_block_q4_0);
+    
+    if (weights->nb[0] != expected_stride) {
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: q_gemv_q4_f32_avx2: Tensor not contiguous.\n");
+        fprintf(stderr, "  nb[0]=%zu, expected=%zu (blocks_per_row=%u)\n", 
+                weights->nb[0], expected_stride, blocks_per_row);
+        fprintf(stderr, "  This kernel requires contiguous tensors (v1.0 limitation).\n");
+        abort();
+        #endif
+        return Q_ERR_INVALID_ARG; 
+    }
+    
     const q_block_q4_0* restrict weight_blocks = (const q_block_q4_0* restrict)weights->data;
     const __m128i low_mask = _mm_set1_epi8(0x0F);
     

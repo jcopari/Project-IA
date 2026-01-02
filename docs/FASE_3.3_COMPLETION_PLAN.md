@@ -331,7 +331,7 @@ q_llama_model model;  // NOT: int model;
 
 ### TASK 2: Validate LM Head Projection
 
-**File:** `src/models/llama3.c` (lines 1578-1612)
+**File:** `src/models/model.c` (lines 1578-1612)
 
 **Current Implementation:**
 - Uses transposed view of `output` tensor
@@ -460,6 +460,6 @@ Once FASE 3.3 is complete:
 - `MASTER_BLUEPRINT.md` - Complete architecture
 - `docs/FASE_3.3_ANALYSIS.md` - Forward pass analysis
 - `docs/STATUS.md` - Current project status
-- `src/models/llama3.c` - Implementation file
+- `src/models/model.c` - Implementation file
 - `tests/test_llama_forward.c` - Test file
 

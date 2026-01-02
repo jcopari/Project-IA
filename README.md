@@ -49,15 +49,17 @@ High-Performance Generic Deep Learning Framework in Pure C - No Architectural Li
 - Comprehensive validation and adversarial testing
 
 ### Tokenizer (FASE 4)
-✅ **FASE 4.1:** BPE Tokenizer (`src/tokenizer/bpe.c`)
+✅ **FASE 4.1:** Dummy Tokenizer (`src/tokenizer/dummy_tokenizer.c`)
+- ⚠️ **IMPORTANT:** This is a **Dummy Tokenizer** (NOT real BPE) for testing only
 - Load tokenizer from binary format (`q_tokenizer_load`)
-- Encode text → tokens (`q_tokenizer_encode`)
+- Encode text → tokens (`q_tokenizer_encode`) - Simple byte-to-token mapping
 - Decode tokens → text (`q_tokenizer_decode`)
-- Binary format: Header + Vocab + BPE Merges
+- Binary format: Header + Vocab + BPE Merges (merges loaded but not used)
 - Vocab: 256 base tokens + 3 special tokens (BOS, EOS, PAD)
 - Export tool: `tools/convert_llama.py --tokenizer tokenizer.bin`
 - Tests: All passing (Release + Debug)
 - Example: `examples/hello_world.c` working
+- **Limitations:** Does NOT implement BPE merge algorithm. Not suitable for production with real Transformer models.
 
 ### Testing & Tools
 ✅ **Utility Tests:** `q_strerror()` validation (23 tests)  

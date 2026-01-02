@@ -101,7 +101,7 @@ src/core/memory.c:123:5: warning: leak of 'ptr' [CWE-401] [-Wanalyzer-malloc-lea
 
 **Exemplo de Falso Positivo:**
 ```
-src/models/llama3.c:1108:49: error: terminating analysis for this program point
+src/models/model.c:1108:49: error: terminating analysis for this program point
 ```
 *Nota: Isso indica que o analyzer abortou por complexidade, não um bug real.*
 

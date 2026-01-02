@@ -4,7 +4,7 @@
 
 Este documento descreve a suíte de testes adversarial focada em proteção contra overflow aritmético nas funções de cálculo de tamanho e criação de tensor views.
 
-**Arquivo de Teste:** `tests/test_llama3_adversarial_overflow.c`  
+**Arquivo de Teste:** `tests/test_model_adversarial_overflow.c`  
 **Total de Testes:** 10  
 **Metodologia:** AAA Pattern (Arrange, Act, Assert) + Indirect Testing
 
@@ -125,10 +125,10 @@ Todos os testes devem passar, indicando que:
 
 ```bash
 # Compilar e executar testes adversarial de overflow
-make test-llama3-overflow-adversarial
+make test-model-overflow-adversarial
 
 # Executar com sanitizers (recomendado)
-make DEBUG=1 test-llama3-overflow-adversarial
+make DEBUG=1 test-model-overflow-adversarial
 ```
 
 ## Cobertura

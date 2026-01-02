@@ -50,7 +50,7 @@ q_error_code q_rope_f32_avx2(
         
         // CORREÇÃO 3: Load Cos/Sin diretamente (layout já está correto: [c0, c0, c1, c1, c2, c2, c3, c3])
         // REMOVIDO: Toda lógica de load_ps(128-bit) + cast + insert + permute
-        // O produtor (llama3.c) já garante o layout duplicado
+        // O produtor (model.c) já garante o layout duplicado
         __m256 cos_vec = _mm256_load_ps(cos + i * 8);
         __m256 sin_vec = _mm256_load_ps(sin + i * 8);
         

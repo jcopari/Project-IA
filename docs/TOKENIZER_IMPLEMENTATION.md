@@ -18,7 +18,7 @@ The BPE (Byte Pair Encoding) tokenizer has been fully implemented, allowing the 
 
 ```
 src/tokenizer/
-└── bpe.c                    # Complete BPE tokenizer implementation
+└── dummy_tokenizer.c        # Dummy Tokenizer (Testing Only - NOT real BPE)
 
 include/
 ├── qorus_types.h            # q_tokenizer, q_bpe_merge structures

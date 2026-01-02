@@ -61,7 +61,7 @@ void q_dequantize_q4_0_block_avx2_public(
 );
 
 // GEMV Q4_F32: Matrix Q4_0 * Vector F32 -> Vector F32
-// Critical operation for Llama-3 inference
+// Critical operation for Transformer inference
 // Preconditions:
 // - weights: Q4_0 matrix [M, N], N must be multiple of 32
 // - input: F32 vector [N], 32-byte aligned

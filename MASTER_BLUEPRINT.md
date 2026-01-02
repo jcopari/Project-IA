@@ -53,7 +53,7 @@ qorus-ia/
 │   ├── models/             # Model Builders (Exemplos)
 │   │   └── example_models.c  # Exemplos de modelos usando framework genérico
 │   └── tokenizer/          # Processamento de Texto
-│       └── bpe.c           # Tokenizer BPE minimalista
+│       └── dummy_tokenizer.c  # Dummy Tokenizer (Testing Only - NOT real BPE)
 ├── tools/
 │   └── convert_model.py    # Script Python: Model Format -> Qorus Binary (Zero-Parse)
 ├── tests/                  # Testes Unitários e de Integração
@@ -165,6 +165,17 @@ O Cursor deve seguir estritamente esta lógica de alocação.
 
 **ORDEM CORRETA DE IMPLEMENTAÇÃO:** Execute as fases nesta ordem exata. Não avance sem validar critérios objetivos.
 
+**Estrutura do Roteiro:**
+- **PARTE 1:** Inferência (FASE 1-4) - Sistema completo de inferência
+- **PARTE 2:** Treinamento (FASE 2.6-3.5) - Capacidade de treinamento
+- **PARTE 3:** Framework Genérico (FASE 5.0+) - Evolução para v3.0
+
+---
+
+## PARTE 1: INFERÊNCIA (v2.0) - Sistema Completo de Inferência
+
+**Objetivo:** Sistema completo de inferência funcional, do carregamento de modelo até geração de texto.
+
 ---
 
 ### ✅ FASE 1: Infraestrutura & Conversor (A Base) - **COMPLETA**
@@ -200,6 +211,10 @@ O Cursor deve seguir estritamente esta lógica de alocação.
 **Implementação:**
 - ✅ **Passo 2.1:** `src/ops/avx2/dequantize.c` implementado. Q4_0 → 32 floats em YMM, FMA-optimized.
 - ✅ **Passo 2.2:** `src/ops/avx2/matmul.c` implementado. GEMV Q4_F32 com dequantização fundida, 4x unrolling.
+  - ✅ **Validação de Contiguidade (2025-01-02):** Validação crítica de que tensor é contíguo em memória antes de execução
+    - Valida `nb[0] == expected_stride` para prevenir leitura de memória inválida
+    - Falha com erro claro se tensor não for contíguo (v1.0 limitation)
+    - Documentação clara de limitação arquitetural
 - ✅ **Passo 2.3:** `src/ops/avx2/rope.c` e `src/ops/avx2/rmsnorm.c` implementados.
 - ✅ **Passo 2.4:** `src/ops/avx2/silu.c` e `src/ops/avx2/softmax.c` implementados. Utilitários matemáticos em `avx_math.h`.
 - ✅ **Passo 2.5:** **Segurança Implementada** - Todas as funções matemáticas agora retornam `q_error_code` e validam inputs em Release mode:
@@ -414,10 +429,22 @@ O Cursor deve seguir estritamente esta lógica de alocação.
 **Objetivo:** Texto entra, texto sai.
 
 **Implementação:**
-- ✅ **Passo 4.1:** Implementar `src/tokenizer/bpe.c`. Carregar `tokenizer.bin` (extraído do modelo original).
-  - **Status:** ✅ **COMPLETA** (2025-01-02)
+- ✅ **Passo 4.1:** Implementar `src/tokenizer/dummy_tokenizer.c`. Carregar `tokenizer.bin` (extraído do modelo original).
+  - **Status:** ✅ **COMPLETA** (2025-01-02) - **ATUALIZADO** (2025-01-02)
   - **Arquivos Implementados:**
-    - `src/tokenizer/bpe.c` - Implementação completa do tokenizer BPE (350+ linhas)
+    - `src/tokenizer/dummy_tokenizer.c` - Dummy Tokenizer para testes (350+ linhas)
+    - **⚠️ IMPORTANTE:** Este é um **Dummy Tokenizer** (NÃO implementa BPE real)
+    - **Limitações:**
+      - Não implementa algoritmo BPE (Byte Pair Encoding)
+      - Mapeia bytes diretamente para token IDs (byte value = token ID se < vocab_size)
+      - Não usa regras de merge carregadas do arquivo tokenizer
+    - **Casos de Uso:**
+      - Testes de infraestrutura com inputs pré-tokenizados
+      - Desenvolvimento/debugging com tokens byte-level
+      - **NÃO adequado para inferência em produção com modelos Transformer reais**
+    - **Para Produção:**
+      - Implementar algoritmo BPE completo (aplicação greedy de merges)
+      - Ou usar inputs pré-tokenizados de tokenizer externo
     - `include/qorus_types.h` - Estruturas `q_tokenizer` e `q_bpe_merge`
     - `include/qorus.h` - API pública completa
     - `tools/convert_llama.py` - Função `write_tokenizer()` para exportação
@@ -454,8 +481,12 @@ O Cursor deve seguir estritamente esta lógica de alocação.
     - ✅ Gerenciamento de memória seguro (cleanup em caso de erro)
   - **Complexidade:**
     - Load: O(V + M) onde V=vocab_size, M=num_merges
-    - Encode: O(T) onde T=text_length (simplificado, sem BPE merges ainda)
+    - Encode: O(T) onde T=text_length (mapeamento direto byte→token, sem BPE merges)
     - Decode: O(N) onde N=num_tokens
+  - **⚠️ Limitação Crítica:**
+    - O tokenizer atual é um **placeholder** que não implementa BPE real
+    - Para produção com modelos Transformer reais, é necessário implementar algoritmo BPE completo
+    - Ou usar inputs pré-tokenizados de tokenizer externo (ex: HuggingFace tokenizers)
   - **Testes:** ✅ Todos passando (Release + Debug com sanitizers)
     - Teste de carregamento
     - Teste de encode/decode
@@ -506,11 +537,20 @@ O Cursor deve seguir estritamente esta lógica de alocação.
 
 ---
 
+## PARTE 2: CAPACIDADE DE TREINAMENTO (Após Inferência Completa)
+
+**Nota:** As fases abaixo devem ser implementadas após a conclusão da FASE 4.2 (Main Loop), quando o sistema de inferência estiver completo e funcional.
+
+---
+
 ### ⏳ FASE 2.6: Training Kernels (Planejamento Completo) - **PLANEJAMENTO COMPLETO**
 
 **Objetivo:** Adicionar capacidade de treinamento para future-implementations (Code Agent, Customer Behavior Prediction, SEO AI Specialist).
 
 **Status:** 📋 Planejamento completo (2024-12-30). Pronto para implementação após FASE 4.2.
+
+**Dependências:**
+- ✅ FASE 4.2 (Main Loop) - Deve estar completa antes de iniciar
 
 **Componentes Planejados:**
 
@@ -622,7 +662,10 @@ O Cursor deve seguir estritamente esta lógica de alocação.
 
 **Dependências:**
 - ✅ FASE 3.3 (Forward Pass) - COMPLETA (necessária para testar kernels CUDA)
+- ✅ FASE 4.2 (Main Loop) - Recomendado estar completa antes de iniciar
 - ⏳ Abstrações de device (pré-requisito)
+
+**Nota:** Pode ser implementada em paralelo com FASE 2.6 (Training Kernels) para acelerar treinamento em GPU.
 
 **Critérios Objetivos de Qualidade (FASE 2.7 - Pendente):**
 - ⏳ **Testes:** 100% pass rate em todos os testes CUDA
@@ -772,7 +815,8 @@ q_error_code q_init_memory_smart(q_context* ctx, const char* model_path) {
 
 **Total Estimado (FASE 3.4):** 18-24 horas
 
-**Dependências:** FASE 2.6 (Optimizers, Loss Functions, Gradient Clipping)
+**Dependências:**
+- ✅ FASE 2.6 (Optimizers, Loss Functions, Gradient Clipping) - Deve estar completa antes de iniciar
 
 **Critérios Objetivos de Qualidade (FASE 3.4 - Pendente):**
 - ⏳ **Testes:** 100% pass rate em todos os testes de backward pass
@@ -819,7 +863,8 @@ q_error_code q_init_memory_smart(q_context* ctx, const char* model_path) {
 
 **Total Estimado (FASE 3.5):** 10-14 horas
 
-**Dependências:** FASE 3.4 (Backward Pass)
+**Dependências:**
+- ✅ FASE 3.4 (Backward Pass) - Deve estar completa antes de iniciar
 
 **Critérios Objetivos de Qualidade (FASE 3.5 - Pendente):**
 - ⏳ **Testes:** 100% pass rate em todos os testes de training loop
@@ -840,7 +885,9 @@ q_error_code q_init_memory_smart(q_context* ctx, const char* model_path) {
 
 ---
 
-## 🚀 EVOLUÇÃO PARA v3.0: FRAMEWORK GENÉRICO
+## PARTE 3: EVOLUÇÃO PARA v3.0 - FRAMEWORK GENÉRICO
+
+**Nota:** As fases abaixo devem ser implementadas após a conclusão das PARTES 1 e 2, quando tanto inferência quanto treinamento estiverem completos e funcionais.
 
 ### Objetivo v3.0
 
@@ -848,6 +895,10 @@ Transformar QorusIA de engine especializado em **framework genérico** sem limit
 - ✅ Performance máxima (zero-malloc, AVX2)
 - ✅ Arquitetura limpa (validações robustas)
 - ✅ Flexibilidade total (qualquer arquitetura)
+
+**Dependências:**
+- ✅ PARTE 1: Inferência completa (FASE 1-4)
+- ✅ PARTE 2: Treinamento completo (FASE 2.6-3.5) - Recomendado estar completa antes de iniciar
 
 ---
 
@@ -1064,7 +1115,10 @@ Transformar QorusIA de engine especializado em **framework genérico** sem limit
 
 **Total Estimado (FASE 5.3):** 12-17 horas
 
-**Dependências:** FASE 5.0 (Core Abstraction), FASE 5.1 (Basic Layers), FASE 5.2 (Advanced Layers)
+**Dependências:**
+- ✅ FASE 5.0 (Core Abstraction) - Deve estar completa antes de iniciar
+- ✅ FASE 5.1 (Basic Layers) - Deve estar completa antes de iniciar
+- ✅ FASE 5.2 (Advanced Layers) - Deve estar completa antes de iniciar
 
 **Critérios Objetivos de Qualidade (FASE 5.3 - Pendente):**
 - ⏳ **Testes:** 100% pass rate em todos os testes de exemplo
@@ -1173,6 +1227,10 @@ Todas as funções matemáticas implementam validações críticas que estão **
 - ✅ **Validação de Alinhamento:** Previne crashes em instruções AVX2
   - ✅ Debug detalhado em `Q_VALIDATE_ALIGNED_OR_RETURN` para diagnóstico de problemas de alinhamento
   - ✅ Correção de alinhamento em softmax (buffers alinhados para cada linha)
+- ✅ **Validação de Contiguidade:** Previne leitura de memória inválida em MatMul
+  - ✅ Validação de `nb[0] == expected_stride` em `q_gemv_q4_f32_avx2`
+  - ✅ Falha com erro claro se tensor não for contíguo (v1.0 limitation)
+  - ✅ Documentação clara de limitação arquitetural
 - ✅ **Validação de Tipo:** Previne uso incorreto de dados quantizados
 - ✅ **Validação de Dimensões:** Previne acesso fora dos limites
 
@@ -1289,33 +1347,61 @@ if (__builtin_expect(block == NULL || output == NULL, 0)) {
 **Comando para Iniciar:**
 > **"Atue como Qorus-Architect. Vamos implementar a FASE 4.2. Comece com o main loop seguindo o planejamento completo. Use o framework MFR + CoT + Mathematical Proof + TDD conforme `docs/.cursorrules`."**
 
-### Implementação Futura: FASE 2.6 (Training Kernels)
+### Implementação Futura: PARTE 2 - Capacidade de Treinamento
 
-Para implementar capacidade de treinamento:
-
-> **"Atue como Qorus-Architect. Vamos implementar a FASE 2.6. Comece com os Optimizers seguindo o planejamento completo em `docs/TRAINING_CAPABILITY_PLAN.md`. Use o framework MFR + CoT + Mathematical Proof + TDD conforme `docs/.cursorrules`."**
+**Pré-requisito:** FASE 4.2 (Main Loop) deve estar completa antes de iniciar.
 
 **Ordem de Implementação Recomendada:**
-1. Optimizers (Adam, AdamW) - Base para treinamento
-2. Loss Functions (MSE, CrossEntropy) - Necessário para backward
-3. Gradient Clipping - Estabilização de treinamento
-4. Backward Pass (FASE 3.4) - Propagação de gradientes
-5. Training Loop (FASE 3.5) - Loop completo de treinamento
 
-**Nota:** FASE 2.7 (CUDA Support) deve ser implementada antes ou em paralelo com FASE 2.6 para acelerar treinamento em GPU.
+1. **FASE 2.6: Training Kernels**
+   > **"Atue como Qorus-Architect. Vamos implementar a FASE 2.6. Comece com os Optimizers seguindo o planejamento completo em `docs/TRAINING_CAPABILITY_PLAN.md`. Use o framework MFR + CoT + Mathematical Proof + TDD conforme `docs/.cursorrules`."**
+   - Optimizers (Adam, AdamW) - Base para treinamento
+   - Loss Functions (MSE, CrossEntropy) - Necessário para backward
+   - Gradient Clipping - Estabilização de treinamento
 
-### Implementação Futura: FASE 5.0+ (Generic Framework v3.0)
+2. **FASE 2.7: CUDA Support** (Pode ser paralelo a FASE 2.6)
+   - Abstração de device
+   - Gerenciamento de memória GPU
+   - Kernels CUDA
 
-Para transformar QorusIA em framework genérico sem limitações:
+3. **FASE 3.4: Backward Pass**
+   - Propagação de gradientes através das camadas
 
-> **"Atue como Qorus-Architect. Vamos implementar a FASE 5.0. Comece com a Generic Layer Interface seguindo o planejamento completo em `docs/GENERIC_FRAMEWORK_PLAN.md`. Use o framework MFR + CoT + Mathematical Proof + TDD conforme `docs/.cursorrules`."**
+4. **FASE 3.5: Training Loop**
+   - Loop completo de treinamento (epochs, mini-batches)
+
+### Implementação Futura: PARTE 3 - Framework Genérico v3.0
+
+**Pré-requisito:** PARTE 1 (Inferência) e PARTE 2 (Treinamento) devem estar completas antes de iniciar.
 
 **Ordem de Implementação Recomendada:**
-1. FASE 5.0: Core Abstraction (Generic Layer Interface, Model Container)
-2. FASE 5.1: Basic Layers (Linear, Activation, Normalization, Softmax)
-3. FASE 5.2: Advanced Layers (MHA, FFN, Transformer Block, Embedding)
-4. FASE 5.3: Example Model Builders (demonstrar uso do framework genérico)
-5. FASE 5.4: Additional Architectures (MLP, CNN, RNN - futuro)
+
+1. **FASE 5.0: Core Abstraction**
+   > **"Atue como Qorus-Architect. Vamos implementar a FASE 5.0. Comece com a Generic Layer Interface seguindo o planejamento completo em `docs/GENERIC_FRAMEWORK_PLAN.md`. Use o framework MFR + CoT + Mathematical Proof + TDD conforme `docs/.cursorrules`."**
+   - Generic Layer Interface (polimorfismo via function pointers)
+   - Generic Model Container
+   - Generic Forward/Backward Pass
+
+2. **FASE 5.1: Basic Layers**
+   - Linear Layer
+   - Activation Layers (ReLU, GeLU, SiLU, Sigmoid)
+   - Normalization Layers (RMSNorm, LayerNorm, BatchNorm)
+   - Softmax Layer
+
+3. **FASE 5.2: Advanced Layers**
+   - Multi-Head Attention (MHA)
+   - Feed-Forward Network (FFN)
+   - Transformer Block
+   - Embedding Layer
+
+4. **FASE 5.3: Example Model Builders**
+   - Transformer Model Builder usando API genérica
+   - Exemplos de uso e documentação
+
+5. **FASE 5.4: Additional Architectures** (Futuro)
+   - Simple MLP
+   - CNN Support
+   - RNN/LSTM Support
 
 ### Comando Inicial (Para Novos Desenvolvedores)
 

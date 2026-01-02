@@ -148,7 +148,7 @@ BENCHMARK_TARGET = tools/benchmark
 TEST_SRCS = $(wildcard $(TESTS_DIR)/*.c)
 TEST_TARGETS = $(TEST_SRCS:$(TESTS_DIR)/%.c=$(BUILD_DIR)/tests/%)
 
-.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-llama3-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-integration-e2e test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme test-llama-scratchpad test-llama-kv-cache test-llama-rope test-llama-token-embedding test-llama-free benchmark analyze analyze-cppcheck analyze-clang-tidy analyze-complete check-syntax
+.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-model-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-integration-e2e test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme test-llama-scratchpad test-llama-kv-cache test-llama-rope test-llama-token-embedding test-llama-free benchmark analyze analyze-cppcheck analyze-clang-tidy analyze-complete check-syntax
 
 # Target para compilar apenas objetos (sem executável) - útil para bibliotecas
 objects: directories $(OBJS)
@@ -332,9 +332,9 @@ test-memory-adversarial: directories $(BUILD_DIR)/tests/test_memory_adversarial
 	@echo "Executando testes adversarial de gerenciamento de memória..."
 	@$(BUILD_DIR)/tests/test_memory_adversarial
 
-test-llama3-overflow-adversarial: directories $(BUILD_DIR)/tests/test_llama3_adversarial_overflow
+test-model-overflow-adversarial: directories $(BUILD_DIR)/tests/test_model_adversarial_overflow
 	@echo "Executando testes adversarial de proteção contra overflow..."
-	@$(BUILD_DIR)/tests/test_llama3_adversarial_overflow
+	@$(BUILD_DIR)/tests/test_model_adversarial_overflow
 
 test-utils: directories $(BUILD_DIR)/tests/test_utils
 	@echo "Executando testes de utilitários..."

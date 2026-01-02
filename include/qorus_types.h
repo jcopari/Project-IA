@@ -224,10 +224,10 @@ typedef struct {
 } q_context;
 
 // ============================================================================
-// Llama-3 Model Structures (Cache-Optimized)
+// Transformer Model Structures (Cache-Optimized)
 // ============================================================================
 
-// Llama-3 Configuration (exact model parameters)
+// Transformer Configuration (model parameters)
 typedef struct {
     uint32_t vocab_size;
     uint32_t dim;
@@ -240,7 +240,7 @@ typedef struct {
     float    rms_norm_eps;
 } q_llama_config;
 
-// Llama-3 Layer Structure (per-layer tensor views)
+// Transformer Layer Structure (per-layer tensor views)
 typedef struct {
     uint32_t layer_idx;       // Layer index (0..n_layers-1)
     q_tensor* attn_norm;      // [dim] (FP32)
@@ -254,7 +254,7 @@ typedef struct {
     q_tensor* w_down;        // [hidden_dim, dim] (Q4_0)
 } q_llama_layer;
 
-// Llama-3 Model Graph (tensor views pointing to mmap)
+// Transformer Model Graph (tensor views pointing to mmap)
 typedef struct {
     q_llama_config config;
     

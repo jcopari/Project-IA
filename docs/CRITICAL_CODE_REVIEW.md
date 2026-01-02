@@ -23,11 +23,13 @@ Para cada ponto cego, aplicamos:
 
 **Estado Atual:**
 ```c
-// src/tokenizer/bpe.c
+// src/tokenizer/dummy_tokenizer.c
 #include "qorus.h"
 
-// TODO: Implementar tokenizer BPE minimalista conforme FASE 4 - Passo 4.1
-// Carregar tokenizer.bin (extraído do modelo original)
+// DUMMY TOKENIZER (For Testing Only)
+// WARNING: This is NOT a real BPE (Byte Pair Encoding) tokenizer.
+// Maps bytes directly to token IDs (byte value = token ID if < vocab_size)
+// Does NOT use merge rules loaded from tokenizer file
 ```
 
 **Lógica Fundamental:**
@@ -88,9 +90,10 @@ Usuário quer gerar texto:
 **Implementação Completa:**
 
 ```c
-// src/tokenizer/bpe.c
+// src/tokenizer/dummy_tokenizer.c
 #include "qorus.h"
 #include <stdint.h>
+// DUMMY TOKENIZER (For Testing Only - NOT real BPE)
 #include <stdlib.h>
 #include <string.h>
 
@@ -130,7 +133,11 @@ void q_tokenizer_free(q_tokenizer* restrict tok);
 **Status de Implementação:** ✅ **COMPLETA** (2025-01-02)
 
 **Arquivos Implementados:**
-- `src/tokenizer/bpe.c` - Implementação completa (350+ linhas)
+- `src/tokenizer/dummy_tokenizer.c` - Dummy Tokenizer para testes (350+ linhas)
+  - ⚠️ **IMPORTANTE:** Este é um **Dummy Tokenizer** (NÃO implementa BPE real)
+  - Não implementa algoritmo BPE (Byte Pair Encoding)
+  - Mapeia bytes diretamente para token IDs
+  - Não adequado para produção com modelos Transformer reais
 - `include/qorus_types.h` - Estruturas `q_tokenizer` e `q_bpe_merge`
 - `include/qorus.h` - API pública completa
 - `tools/convert_llama.py` - Função `write_tokenizer()` para exportação
@@ -579,8 +586,11 @@ q_error_code q_init_memory(q_context* restrict ctx, const char* model_path) {
 ### Plano de Ação Recomendado
 
 **Prioridade 0 (BLOQUEANTE):**
-1. Implementar tokenizer BPE (`src/tokenizer/bpe.c`)
-2. Testar integração completa (texto → tokens → forward → tokens → texto)
+1. ✅ Implementar dummy tokenizer (`src/tokenizer/dummy_tokenizer.c`) - **COMPLETO**
+   - ⚠️ **Nota:** Este é um placeholder. Para produção, implementar BPE real.
+   - ⚠️ **Limitação:** Não implementa algoritmo BPE. Mapeia bytes diretamente para token IDs.
+   - ⚠️ **Não adequado para produção** com modelos Transformer reais.
+2. ⏳ Testar integração completa (texto → tokens → forward → tokens → texto) - **PENDENTE** (FASE 4.2)
 
 **Prioridade 1 (IMPORTANTE):**
 3. Adicionar padding no conversor para vocab_size
