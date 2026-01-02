@@ -272,5 +272,52 @@ q_error_code q_tokenizer_decode(
 // - All memory freed, tokenizer invalidated
 void q_tokenizer_free(q_tokenizer* restrict tok);
 
+// ============================================================================
+// Generation API (FASE 4.2: Main Application)
+// ============================================================================
+
+// Sample token from logits distribution
+// Uses partial sort O(V + k log k) for top-k/top-p, not full sort O(V log V)
+// Preconditions:
+// - logits: Array of logits [vocab_size], 32-byte aligned
+// - vocab_size: Size of vocabulary (> 0)
+// - temperature: Sampling temperature (0.0 = greedy, >0.0 = sampling, must be finite)
+// - top_k: Top-k sampling (0 = disabled, >0 = consider only top-k tokens)
+// - top_p: Nucleus sampling (0.0 = disabled, >0.0 = consider tokens until cumulative prob >= top_p)
+// - token_id_out: Output parameter for selected token ID
+// Returns: Q_OK on success, negative q_error_code on error
+// Postconditions:
+// - token_id_out contains valid token ID (0 <= token_id < vocab_size)
+// - If top_k > 0 and top_p > 0.0, both constraints are applied (intersection)
+q_error_code q_sample_token(
+    const float* restrict logits,        // [vocab_size] - logits do modelo
+    uint32_t vocab_size,                 // Tamanho do vocabulário
+    float temperature,                    // Temperatura (0.0 = greedy, >0.0 = sampling)
+    uint32_t top_k,                      // Top-k sampling (0 = desabilitado)
+    float top_p,                         // Nucleus sampling (0.0 = desabilitado)
+    uint32_t* restrict token_id_out,     // [out] Token ID selecionado
+    q_context* restrict ctx              // [in] Contexto para arena (opcional, NULL = usar malloc)
+);
+
+// Generate text autoregressively
+// Preconditions:
+// - state: Initialized generation state (model, tokenizer, prompt_tokens set)
+// - state->ctx: Memory context with KV cache and arena allocated
+// - state->model: Valid model (from llama_build_graph)
+// - state->tokenizer: Valid tokenizer (from q_tokenizer_load)
+// - state->prompt_tokens: Array of prompt token IDs [num_prompt_tokens]
+// - state->generated_tokens: Pre-allocated buffer [max_tokens]
+// - state->temperature >= 0.0f && isfinite(temperature)
+// - state->max_tokens > 0
+// Returns: Q_OK on success, negative q_error_code on error
+// Postconditions:
+// - state->generated_tokens contains generated token IDs [0..num_generated_tokens-1]
+// - state->num_generated_tokens <= state->max_tokens
+// - KV Cache updated with all tokens (prompt + generated)
+// - ctx->scratch_head reset after each token generation
+q_error_code q_generate(
+    q_generation_state* restrict state    // [in/out] Generation state
+);
+
 #endif // QORUS_H
 

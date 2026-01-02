@@ -189,6 +189,21 @@ $(TARGET): $(OBJS)
 $(BENCHMARK_TARGET): tools/benchmark.c $(OBJS)
 	$(CC) $(CFLAGS) -DDEBUG $< $(OBJS) -o $@ $(LDFLAGS)
 
+# Benchmark generation tool
+$(BUILD_DIR)/tools/benchmark_generation: tools/benchmark_generation.c $(OBJS)
+	@mkdir -p $(BUILD_DIR)/tools
+	$(CC) $(CFLAGS) -DDEBUG $< $(OBJS) -o $@ $(LDFLAGS) -lpthread
+
+# Performance analysis tool
+$(BUILD_DIR)/tools/analyze_performance: tools/analyze_performance.c $(OBJS)
+	@mkdir -p $(BUILD_DIR)/tools
+	$(CC) $(CFLAGS) -DDEBUG $< $(OBJS) -o $@ $(LDFLAGS)
+
+# Sampling benchmark (needs all objects for llama_forward)
+$(BUILD_DIR)/tools/benchmark_sampling: tools/benchmark_sampling.c $(OBJS)
+	@mkdir -p $(BUILD_DIR)/tools
+	$(CC) $(CFLAGS) -DDEBUG tools/benchmark_sampling.c $(OBJS) -o $@ $(LDFLAGS)
+
 # Regra com geração automática de dependências (detecção de headers)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
@@ -474,6 +489,42 @@ test-tokenizer-free-complete: directories $(BUILD_DIR)/tests/test_tokenizer_free
 	@echo "Executando validação completa de q_tokenizer_free..."
 	@$(BUILD_DIR)/tests/test_tokenizer_free_complete || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
 	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-main: directories $(BUILD_DIR)/tests/test_main
+	@echo "Executando teste main application (FASE 4.2)..."
+	@$(BUILD_DIR)/tests/test_main
+
+test-soa-adversarial: directories $(BUILD_DIR)/tests/test_soa_adversarial
+	@echo "Executando testes adversários para implementação SoA..."
+	@$(BUILD_DIR)/tests/test_soa_adversarial
+
+test-generation-e2e: directories $(BUILD_DIR)/tests/test_generation_e2e
+	@echo "Gerando modelo dummy e tokenizer..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@python3 tools/convert_llama.py --tokenizer tokenizer.bin || true
+	@echo "Executando testes end-to-end de geração..."
+	@$(BUILD_DIR)/tests/test_generation_e2e || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+analyze-performance: directories $(BUILD_DIR)/tools/analyze_performance
+	@echo "Gerando modelo dummy e tokenizer..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@python3 tools/convert_llama.py --tokenizer tokenizer.bin || true
+	@echo "Executando análise de performance..."
+	@$(BUILD_DIR)/tools/analyze_performance || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+benchmark-generation: directories $(BUILD_DIR)/tools/benchmark_generation
+	@echo "Gerando modelo dummy e tokenizer..."
+	@python3 tools/convert_llama.py model_dummy.qorus 2 || true
+	@python3 tools/convert_llama.py --tokenizer tokenizer.bin || true
+	@echo "Executando benchmark de performance de geração..."
+	@$(BUILD_DIR)/tools/benchmark_generation || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
+	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+benchmark-sampling: directories $(BUILD_DIR)/tools/benchmark_sampling
+	@echo "Executando benchmark de performance de sampling (SoA)..."
+	@$(BUILD_DIR)/tools/benchmark_sampling
 
 test-model-file-validation: directories $(BUILD_DIR)/tests/test_model_file_validation
 	@echo "Executando testes de validação de arquivos de modelo..."

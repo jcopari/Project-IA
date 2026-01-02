@@ -285,4 +285,24 @@ typedef struct {
     q_context* ctx;           // Memory context (for arena allocations)
 } q_llama_model;
 
+// ============================================================================
+// Generation State (FASE 4.2: Main Application)
+// ============================================================================
+
+// Estrutura de estado do loop de geração
+typedef struct {
+    q_context* ctx;           // Contexto de memória
+    q_llama_model* model;     // Modelo carregado
+    q_tokenizer* tokenizer;   // Tokenizer carregado
+    uint32_t* prompt_tokens;  // Tokens do prompt inicial
+    uint32_t num_prompt_tokens;
+    uint32_t* generated_tokens; // Tokens gerados
+    uint32_t num_generated_tokens;
+    uint32_t max_tokens;      // Limite de tokens a gerar
+    float temperature;        // Temperatura para sampling (0.0 = greedy)
+    uint32_t top_k;           // Top-k sampling (0 = desabilitado)
+    float top_p;              // Nucleus sampling (0.0 = desabilitado)
+    uint32_t current_pos;     // Posição atual no contexto (prompt + generated)
+} q_generation_state;
+
 #endif // QORUS_TYPES_H
