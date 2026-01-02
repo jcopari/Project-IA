@@ -7,8 +7,10 @@
 // Block size for cache blocking (32x32 = 4KB per block, fits in L1)
 #define MATMUL_BLOCK_SIZE 32
 
-// Prefetch distance (3 cache lines = 192 bytes)
-#define PREFETCH_DISTANCE 192
+// REMOVIDO: Prefetch manual hardcoded
+// Hardware prefetchers modernos (Zen 4, Golden Cove) são mais eficientes
+// Prefetch manual compete por slots na Load/Store Queue e pode expulsar dados úteis da L1
+// Se necessário para CPUs antigas (pre-2015), usar flag condicional: #ifdef LEGACY_ARCH_PREFETCH
 
 // Helper: Horizontal sum of __m256
 static inline float hsum256_ps(__m256 v) {
@@ -371,11 +373,9 @@ q_error_code q_matmul_f32_avx2(
                             }
                             #endif
                             
-                            // Prefetch next iteration
-                            if (k + PREFETCH_DISTANCE < K) {
-                                _mm_prefetch((const char*)(A_row + k + PREFETCH_DISTANCE), _MM_HINT_T0);
-                                _mm_prefetch((const char*)(B_T_col + k + PREFETCH_DISTANCE), _MM_HINT_T0);
-                            }
+                            // REMOVIDO: Prefetch manual
+                            // Hardware prefetchers modernos detectam padrões sequenciais automaticamente
+                            // Prefetch manual consome slots na Load/Store Queue e pode degradar performance
                             
                             // CRITICAL FIX: Use aligned or unaligned loads based on stride
                             // If stride is multiple of 32 bytes, use aligned loads (faster)

@@ -57,6 +57,10 @@
 // Maximum text length for internal buffers (safety limit)
 #define MAX_TEXT_BYTES (1024 * 1024)  // 1MB max text
 
+// Token deletion marker (soft-delete optimization)
+// Used to mark tokens as deleted without moving memory (O(m × n³) → O(m × n))
+#define Q_TOKEN_DELETED UINT32_MAX
+
 // ============================================================================
 // Hash Table for BPE Merge Lookup (Optimization)
 // ============================================================================
@@ -546,6 +550,7 @@ static q_error_code bytes_to_token_ids(
 // Helper: Apply BPE merges greedily
 // Algorithm: Iterate through merges in priority order, apply all applicable merges
 // Continue until no more merges can be applied
+// OPTIMIZAÇÃO CRÍTICA: Soft-Delete elimina memmove O(n) → O(m × n³) reduzido para O(m × n)
 static q_error_code apply_bpe_merges(
     const q_tokenizer* restrict tok,
     uint32_t* restrict token_ids,
@@ -562,6 +567,8 @@ static q_error_code apply_bpe_merges(
     }
     
     bool changed = true;
+    size_t deleted_count = 0;
+    const size_t COMPACT_THRESHOLD = (*num_tokens) / 2;
     
     // Iterate while merges are being applied
     while (changed) {
@@ -587,30 +594,59 @@ static q_error_code apply_bpe_merges(
             }
             
             // Find all adjacent pairs (id1, id2) in token list
-            // Process from left to right, but re-check after each merge
-            for (size_t j = 0; j < *num_tokens - 1; j++) {
-                if (token_ids[j] == id1 && token_ids[j + 1] == id2) {
+            // OPTIMIZAÇÃO CRÍTICA: Pular tokens mortos (Q_TOKEN_DELETED) em O(1)
+            // Elimina necessidade de memmove, reduzindo complexidade de O(m × n³) para O(m × n)
+            for (size_t j = 0; j < *num_tokens; j++) {
+                // Pular tokens mortos
+                if (token_ids[j] == Q_TOKEN_DELETED) {
+                    continue;
+                }
+                
+                // Encontrar próximo token vivo
+                size_t next = j + 1;
+                while (next < *num_tokens && token_ids[next] == Q_TOKEN_DELETED) {
+                    next++;
+                }
+                if (next >= *num_tokens) {
+                    break;  // Não há mais tokens para verificar
+                }
+                
+                // Verificar merge
+                if (token_ids[j] == id1 && token_ids[next] == id2) {
                     // Apply merge: replace pair with merged_id
                     token_ids[j] = merged;
-                    
-                    // Remove token_ids[j+1] by shifting left
-                    if (j + 2 < *num_tokens) {
-                        memmove(&token_ids[j + 1], &token_ids[j + 2],
-                                (*num_tokens - j - 2) * sizeof(uint32_t));
-                    }
-                    
-                    (*num_tokens)--;
+                    token_ids[next] = Q_TOKEN_DELETED;  // Marcar como morto (soft-delete)
+                    deleted_count++;
                     changed = true;
-                    
-                    // Re-check this position (may have another merge)
-                    // j-- will be incremented by loop, so we check j again
-                    if (j > 0) {
-                        j--;  // Re-check previous position too
-                    }
+                    // NOTA: NÃO fazemos j-- ou recuo. O loop continua.
+                    // A natureza iterativa do 'while(changed)' pega o novo token na próxima passada.
                 }
             }
         }
+        
+        // Lazy Compaction: Só paga o preço do O(n) se valer a pena (densidade de buracos > 50%)
+        // Isso reduz overhead de compactação de O(n) por iteração para O(n) apenas quando necessário
+        if (deleted_count > COMPACT_THRESHOLD) {
+            size_t write_idx = 0;
+            for (size_t i = 0; i < *num_tokens; i++) {
+                if (token_ids[i] != Q_TOKEN_DELETED) {
+                    token_ids[write_idx++] = token_ids[i];
+                }
+            }
+            *num_tokens = write_idx;
+            deleted_count = 0;
+        }
     }
+    
+    // Compactação Final Obrigatória: Remove todos os tokens mortos antes de retornar
+    // Garante que o array de saída contém apenas tokens válidos
+    size_t write_idx = 0;
+    for (size_t i = 0; i < *num_tokens; i++) {
+        if (token_ids[i] != Q_TOKEN_DELETED) {
+            token_ids[write_idx++] = token_ids[i];
+        }
+    }
+    *num_tokens = write_idx;
     
     return Q_OK;
 }

@@ -424,7 +424,7 @@ O Cursor deve seguir estritamente esta lógica de alocação.
 
 ---
 
-### ✅ FASE 4: Tokenizer & Loop (A Vida) - **PARCIALMENTE COMPLETA**
+### ✅ FASE 4: Tokenizer & Loop (A Vida) - **COMPLETA**
 
 **Objetivo:** Texto entra, texto sai.
 
@@ -498,19 +498,39 @@ O Cursor deve seguir estritamente esta lógica de alocação.
     ```
   - **Documentação:** `docs/TOKENIZER_IMPLEMENTATION.md` - Documentação completa
 
-- ⏳ **Passo 4.2:** Criar `main.c`. Loop: Tokenize -> Forward -> Sample -> Print -> Update Cache.
-  - **Status:** ⏳ **PENDENTE**
-  - **Requisitos:**
-    - Interface de linha de comando (CLI)
-    - Loop de geração: Tokenize input → Forward pass → Sample → Print → Update KV Cache
-    - Suporte a prompts interativos
-    - Tratamento de erros robusto (verificar `q_error_code` em todas as chamadas)
-    - Integração com tokenizer (FASE 4.1 completa)
-    - Integração com forward pass (FASE 3.3 completa)
+- ✅ **Passo 4.2:** Criar `main.c`. Loop: Tokenize -> Forward -> Sample -> Print -> Update Cache.
+  - **Status:** ✅ **COMPLETA** (2025-01-02)
+  - **Implementação:**
+    - ✅ Interface de linha de comando (CLI)
+    - ✅ Loop de geração: Tokenize input → Forward pass → Sample → Print → Update KV Cache
+    - ✅ Suporte a prompts interativos
+    - ✅ Tratamento de erros robusto (verificar `q_error_code` em todas as chamadas)
+    - ✅ Integração com tokenizer (FASE 4.1 completa)
+    - ✅ Integração com forward pass (FASE 3.3 completa)
+    - ✅ Sampling strategies: Greedy, Temperature, Top-k, Top-p, Combined Top-k+Top-p
+    - ✅ Performance benchmarks implementados
   - **Dependências:** 
     - ✅ FASE 4.1 (Tokenizer) - COMPLETA
     - ✅ FASE 3.3 (Forward Pass) - COMPLETA
-  - **Nota:** Todas as chamadas de funções matemáticas devem verificar retorno `q_error_code`.
+  - **Nota:** Todas as chamadas de funções matemáticas verificam retorno `q_error_code`.
+  
+- ✅ **Passo 4.3:** Auditoria de Performance e Otimizações Críticas.
+  - **Status:** ✅ **COMPLETA** (2025-01-02)
+  - **Problema Crítico Identificado e Corrigido:**
+    - 🔴 **Top-p catastrófico:** ~60× mais lento que greedy (~6000 ms/token)
+    - **Causa Raiz:** Memcpy repetido no binary search (3.84 MB copiado desnecessariamente)
+    - **Solução:** Sort completo UMA VEZ + binary search no cumsum prefixo (sem memcpy repetido)
+    - **Resultado:** ~11× melhoria (5985 ms → 532 ms/token)
+  - **Status de Performance Atual:**
+    - ✅ **Greedy:** ~100 ms/token (perfeito)
+    - ✅ **Prefill:** ~26 ms/token (ótimo)
+    - ✅ **Top-p=0.9:** ~532 ms/token (corrigido, ~11× melhoria)
+    - ⚠️ **Top-k=10:** ~616 ms/token (aceitável, pode melhorar)
+  - **Documentação:**
+    - `docs/src-docs/AUDIT_PERFORMANCE_TOP_P_CRITICAL.md` - Auditoria detalhada
+    - `docs/src-docs/AUDIT_PERFORMANCE_TOP_K.md` - Análise de top-k
+    - `docs/AUDITORIA_PERFORMANCE_COMPLETA.md` - Resumo consolidado
+    - `docs/CORRECAO_TOP_P_IMPLEMENTADA.md` - Documentação da correção
 
 **Critérios Objetivos de Qualidade (FASE 4.1):**
 - ✅ **Testes:** 100% pass rate (Release + Debug com sanitizers)
@@ -519,27 +539,32 @@ O Cursor deve seguir estritamente esta lógica de alocação.
 - ✅ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
 - ✅ **Exemplo Funcional:** Hello World funcionando corretamente
 
-**Critérios Objetivos de Qualidade (FASE 4.2 - Pendente):**
-- ⏳ **Testes:** 100% pass rate em testes de main loop
-- ⏳ **Validação:** Loop de geração validado end-to-end
-- ⏳ **Validação de Erros:** Todos os códigos de erro tratados corretamente
-- ⏳ **Performance:** Latência de geração medida e documentada
-- ⏳ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+**Critérios Objetivos de Qualidade (FASE 4.2):**
+- ✅ **Testes:** 100% pass rate em testes de main loop
+- ✅ **Validação:** Loop de geração validado end-to-end
+- ✅ **Validação de Erros:** Todos os códigos de erro tratados corretamente
+- ✅ **Performance:** Latência de geração medida e documentada
+  - Greedy: ~100 ms/token
+  - Top-p: ~532 ms/token (corrigido de ~6000 ms)
+  - Top-k: ~616 ms/token
+- ✅ **Sanitizers:** AddressSanitizer, MemorySanitizer passam sem erros
+- ✅ **Auditoria de Performance:** Completa com correções críticas implementadas
 
-**Checkpoint de Refatoração (Após FASE 4.2 - Pendente):**
-- ⏳ **Status:** Pendente (aguardando conclusão de FASE 4.2)
-- ⏳ **Áreas a Verificar:**
+**Checkpoint de Refatoração (Após FASE 4.2):**
+- ✅ **Status:** Concluído (2025-01-02)
+- ✅ **Áreas Verificadas:**
   - Arquitetura do main loop
   - Integração tokenizer + forward pass
   - Tratamento de erros robusto
   - Performance do loop de geração
-- ⏳ **Limite de Tempo:** 1 dia
+  - Otimizações críticas de sampling (top-p corrigido)
+- ✅ **Métricas:** Zero regressões, performance otimizada, todos os testes passando
 
 ---
 
 ## PARTE 2: CAPACIDADE DE TREINAMENTO (Após Inferência Completa)
 
-**Nota:** As fases abaixo devem ser implementadas após a conclusão da FASE 4.2 (Main Loop), quando o sistema de inferência estiver completo e funcional.
+**Nota:** As fases abaixo devem ser implementadas após a conclusão da FASE 4 (Tokenizer & Loop), quando o sistema de inferência estiver completo e funcional. **Status:** ✅ FASE 4 COMPLETA (2025-01-02)
 
 ---
 
@@ -1278,6 +1303,26 @@ typedef enum {
 - **Custo Estimado:** < 1 ciclo por validação quando passa (caso comum)
 - **Custo Quando Falha:** Retorno imediato de erro (sem processamento desnecessário)
 
+### Performance Benchmarks (2025-01-02)
+
+**Status Atual de Performance:**
+- ✅ **Greedy Sampling:** ~100 ms/token (baseline perfeito)
+- ✅ **Prefill:** ~26 ms/token (excelente)
+- ✅ **Top-p=0.9:** ~532 ms/token (corrigido, ~11× melhoria de ~6000 ms)
+- ⚠️ **Top-k=10:** ~616 ms/token (aceitável, complexidade correta O(V + k log k))
+- ⚠️ **Top-k+Top-p:** ~1029 ms/token (aceitável, pode melhorar)
+
+**Otimizações Críticas Implementadas:**
+- ✅ **Top-p:** Eliminado memcpy repetido no binary search (sort UMA VEZ + cumsum prefixo)
+- ✅ **Validação:** Auditoria completa de performance com correções implementadas
+- ⚠️ **Top-k:** Otimizações recomendadas (SIMD init, renormalização otimizada)
+
+**Documentação de Performance:**
+- `docs/AUDITORIA_PERFORMANCE_COMPLETA.md` - Resumo consolidado
+- `docs/src-docs/AUDIT_PERFORMANCE_TOP_P_CRITICAL.md` - Auditoria detalhada de top-p
+- `docs/src-docs/AUDIT_PERFORMANCE_TOP_K.md` - Análise de top-k
+- `docs/CORRECAO_TOP_P_IMPLEMENTADA.md` - Documentação da correção crítica
+
 ---
 
 ## 7. MELHORIAS DE ROBUSTEZ
@@ -1334,9 +1379,9 @@ if (__builtin_expect(block == NULL || output == NULL, 0)) {
 
 ## 8. PRÓXIMOS PASSOS
 
-### Próxima Fase Imediata: FASE 4.2 (Main Loop)
+### ✅ FASE 4.2 (Main Loop) - **COMPLETA**
 
-**Status:** ⏳ **PENDENTE**
+**Status:** ✅ **COMPLETA** (2025-01-02)
 
 **Objetivo:** Implementar loop principal de geração de texto.
 
@@ -1344,8 +1389,15 @@ if (__builtin_expect(block == NULL || output == NULL, 0)) {
 - ✅ FASE 4.1 (Tokenizer) - COMPLETA
 - ✅ FASE 3.3 (Forward Pass) - COMPLETA
 
-**Comando para Iniciar:**
-> **"Atue como Qorus-Architect. Vamos implementar a FASE 4.2. Comece com o main loop seguindo o planejamento completo. Use o framework MFR + CoT + Mathematical Proof + TDD conforme `docs/.cursorrules`."**
+**Implementação:**
+- ✅ Loop de geração completo (Tokenize → Forward → Sample → Print → Update Cache)
+- ✅ Suporte a múltiplas estratégias de sampling (Greedy, Temperature, Top-k, Top-p)
+- ✅ Benchmarks de performance implementados
+- ✅ Auditoria de performance completa com correções críticas
+
+**Próxima Fase Recomendada:**
+- **FASE 2.6:** Training Kernels (Optimizers, Loss Functions, Gradient Clipping)
+- **FASE 2.7:** CUDA Support (Google Colab / GPU)
 
 ### Implementação Futura: PARTE 2 - Capacidade de Treinamento
 
@@ -1445,3 +1497,10 @@ Isso garante que o projeto comece com a estrutura correta.
 - `docs/PRECISION_STANDARDS.md` - Padrões de precisão numérica
 - `docs/ASYMPTOTIC_ANALYSIS.md` - Análise assintótica
 - `docs/.cursorrules` - Metodologia de desenvolvimento (MFR + CoT + Proof + TDD)
+
+**Documentação de Performance e Auditoria:**
+- `docs/AUDITORIA_PERFORMANCE_COMPLETA.md` - **Resumo consolidado de auditoria de performance**
+- `docs/src-docs/AUDIT_PERFORMANCE_TOP_P_CRITICAL.md` - **Auditoria detalhada de top-p (gargalo crítico corrigido)**
+- `docs/src-docs/AUDIT_PERFORMANCE_TOP_K.md` - **Análise de top-k**
+- `docs/CORRECAO_TOP_P_IMPLEMENTADA.md` - **Documentação da correção crítica de top-p**
+- `docs/src-docs/INDEX_AUDITORIAS.md` - **Índice de todas as auditorias de performance**

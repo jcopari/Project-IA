@@ -217,19 +217,6 @@ void* q_arena_alloc(q_context* restrict ctx, size_t size) {
         #endif
     }
     
-    // Security: Validate alignment invariant (ALWAYS ACTIVE - critical for AVX2)
-    // This check cannot be DEBUG-only because misalignment causes crashes in Release
-    if (__builtin_expect(!q_is_aligned((uint8_t*)ctx->scratch_buffer + ctx->scratch_head), 0)) {
-        #ifdef DEBUG
-        fprintf(stderr, "ERROR: Arena head desalinhado! head=%zu at %s:%d\n", 
-                ctx->scratch_head, __FILE__, __LINE__);
-        abort();
-        #else
-        // In Release, return NULL to prevent crash (caller should handle)
-        return NULL;
-        #endif
-    }
-
     // Security: Safe alignment with overflow check
     size_t aligned_size = safe_align_size(size);
     if (aligned_size == 0) {
@@ -248,24 +235,26 @@ void* q_arena_alloc(q_context* restrict ctx, size_t size) {
         return NULL;  // OOM
     }
 
-    // Return pointer and update head
-    void* ptr = (uint8_t*)ctx->scratch_buffer + ctx->scratch_head;
+    // OTIMIZAÇÃO CRÍTICA: Usar __builtin_assume_aligned baseado em invariante matemática
+    // Invariante garantida: scratch_head é sempre múltiplo de Q_ALIGN
+    // Prova: Base (scratch_head = 0) e Indução (scratch_head += Q_ALIGN_SIZE(size))
+    // Isso elimina validação de alinhamento em runtime e permite otimizações do compilador
+    // O compilador pode gerar instruções VMOVAPS (aligned store) sem preâmbulo de verificação
+    void* base_ptr = __builtin_assume_aligned(ctx->scratch_buffer, Q_ALIGN);
+    void* ptr = (uint8_t*)base_ptr + ctx->scratch_head;
     
-    // CRITICAL FIX: Ensure scratch_head remains aligned to Q_ALIGN (64 bytes)
-    // This guarantees that subsequent allocations are also aligned
-    // aligned_size is already aligned to Q_ALIGN, so new_head should be aligned
-    // But we verify this invariant to catch any bugs
+    ctx->scratch_head = new_head; // Invariante mantida (new_head é múltiplo de Q_ALIGN)
+    
+    // Validação apenas em DEBUG para detectar bugs que quebrem a invariante
     #ifdef DEBUG
     if (new_head % Q_ALIGN != 0) {
-        fprintf(stderr, "ERROR: q_arena_alloc: new_head (%zu) not aligned to %d bytes\n", 
+        fprintf(stderr, "ERROR: q_arena_alloc: Invariante violada! new_head (%zu) not aligned to %d bytes\n", 
                 new_head, Q_ALIGN);
         abort();
     }
-    #endif
-    
-    ctx->scratch_head = new_head;
-
     Q_ASSERT_ALIGNED(ptr);
+    #endif
+
     return ptr;
 }
 

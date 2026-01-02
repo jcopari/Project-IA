@@ -1266,6 +1266,46 @@ static q_error_code llama_attention_forward(
     // Process each query head
     float scale = 1.0f / sqrtf((float)head_dim);
     
+    // OTIMIZAÇÃO CRÍTICA: Mover estruturas q_tensor para fora do loop
+    // Reduz overhead de inicialização de estruturas repetidamente
+    // Apenas atualizamos o campo .data dentro do loop
+    q_tensor q_head_tensor = {
+        .ne = {seq_len, head_dim, 1, 1},
+        .nb = {head_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .type = Q_F32
+    };
+    
+    q_tensor k_t_tensor = {
+        .ne = {head_dim, seq_len, 1, 1},
+        .nb = {seq_len * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .type = Q_F32
+    };
+    
+    q_tensor scores_tensor = {
+        .ne = {seq_len, seq_len, 1, 1},
+        .nb = {scratch->scores_stride_floats * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .type = Q_F32
+    };
+    
+    // Estruturas para atenção (probs @ V) - inicializadas fora do loop para reduzir overhead
+    q_tensor probs_tensor = {
+        .ne = {seq_len, seq_len, 1, 1},
+        .nb = {scratch->scores_stride_floats * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .type = Q_F32
+    };
+    
+    q_tensor v_head_tensor = {
+        .ne = {seq_len, head_dim, 1, 1},
+        .nb = {head_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .type = Q_F32
+    };
+    
+    q_tensor attn_head_tensor = {
+        .ne = {seq_len, head_dim, 1, 1},
+        .nb = {head_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
+        .type = Q_F32
+    };
+    
     for (uint32_t qh = 0; qh < n_heads; qh++) {
         // Determine which KV head to use (GQA: multiple Q heads share KV head)
         uint32_t kv_head_idx = qh / (n_heads / n_kv_heads);
@@ -1291,29 +1331,10 @@ static q_error_code llama_attention_forward(
             last_transposed_kv_head = kv_head_idx;
         }
         
-        // Extract Q head: [seq_len, head_dim]
-        q_tensor q_head_tensor = {
-            .data = (void*)(scratch->q_heads + (size_t)qh * (seq_len * head_dim)),
-            .ne = {seq_len, head_dim, 1, 1},
-            .nb = {head_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
-            .type = Q_F32
-        };
-        
-        // Compute scores: Q @ K^T -> [seq_len, seq_len]
-        // OPTIMIZATION: Use pre-transposed K from k_t_buf (transposed once per KV head)
-        q_tensor k_t_tensor = {
-            .data = (void*)scratch->k_t_buf,
-            .ne = {head_dim, seq_len, 1, 1},
-            .nb = {seq_len * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
-            .type = Q_F32
-        };
-        
-        q_tensor scores_tensor = {
-            .data = (void*)scratch->scores_buf,
-            .ne = {seq_len, seq_len, 1, 1},
-            .nb = {scratch->scores_stride_floats * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
-            .type = Q_F32
-        };
+        // Atualizar apenas o ponteiro .data (estrutura já inicializada fora do loop)
+        q_head_tensor.data = (void*)(scratch->q_heads + (size_t)qh * (seq_len * head_dim));
+        k_t_tensor.data = (void*)scratch->k_t_buf;
+        scores_tensor.data = (void*)scratch->scores_buf;
         
         // CRITICAL VALIDATION: Verify dimensions match before MatMul
         // A[seq_len, head_dim] @ B[head_dim, seq_len] -> C[seq_len, seq_len]
@@ -1393,26 +1414,10 @@ static q_error_code llama_attention_forward(
         
         // Attention output: probs @ V -> [seq_len, head_dim]
         // CORREÇÃO 1: Usar stride alinhado para probs_tensor
-        q_tensor probs_tensor = {
-            .data = (void*)probs_buf,
-            .ne = {seq_len, seq_len, 1, 1},
-            .nb = {scratch->scores_stride_floats * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
-            .type = Q_F32
-        };
-        
-        q_tensor v_head_tensor = {
-            .data = (void*)(scratch->v_heads + (size_t)kv_head_idx * (seq_len * head_dim)),
-            .ne = {seq_len, head_dim, 1, 1},
-            .nb = {head_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
-            .type = Q_F32
-        };
-        
-        q_tensor attn_head_tensor = {
-            .data = (void*)scratch->attn_head_buf,
-            .ne = {seq_len, head_dim, 1, 1},
-            .nb = {head_dim * sizeof(float), sizeof(float), sizeof(float), sizeof(float)},
-            .type = Q_F32
-        };
+        // OTIMIZAÇÃO: Estruturas já inicializadas fora do loop, apenas atualizar ponteiros
+        probs_tensor.data = (void*)probs_buf;
+        v_head_tensor.data = (void*)(scratch->v_heads + (size_t)kv_head_idx * (seq_len * head_dim));
+        attn_head_tensor.data = (void*)scratch->attn_head_buf;
         
         ret = q_matmul_f32_avx2(&probs_tensor, &v_head_tensor, &attn_head_tensor, ctx);
         if (ret != Q_OK) {

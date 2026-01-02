@@ -498,6 +498,28 @@ test-soa-adversarial: directories $(BUILD_DIR)/tests/test_soa_adversarial
 	@echo "Executando testes adversários para implementação SoA..."
 	@$(BUILD_DIR)/tests/test_soa_adversarial
 
+test-bpe-soft-delete: directories $(BUILD_DIR)/tests/test_bpe_soft_delete
+	@echo "Executando testes adversarial para BPE Soft-Delete..."
+	@$(BUILD_DIR)/tests/test_bpe_soft_delete
+
+test-arena-optimized: directories $(BUILD_DIR)/tests/test_arena_optimized
+	@echo "Executando testes adversarial para Arena Optimized..."
+	@$(BUILD_DIR)/tests/test_arena_optimized
+
+test-rope-layout: directories $(BUILD_DIR)/tests/test_rope_layout
+	@echo "Executando testes adversarial para RoPE Layout Validation..."
+	@$(BUILD_DIR)/tests/test_rope_layout
+
+test-correcoes-criticas: test-bpe-soft-delete test-arena-optimized test-rope-layout
+	@echo "========================================"
+	@echo "  TODOS OS TESTES DE CORREÇÕES CRÍTICAS PASSARAM ✓"
+	@echo "========================================"
+
+# Performance benchmark suite
+test-performance: directories $(BUILD_DIR)/tests/test_performance_benchmark
+	@echo "Executando testes de performance..."
+	@$(BUILD_DIR)/tests/test_performance_benchmark
+
 test-generation-e2e: directories $(BUILD_DIR)/tests/test_generation_e2e
 	@echo "Gerando modelo dummy e tokenizer..."
 	@python3 tools/convert_llama.py model_dummy.qorus 2 || true

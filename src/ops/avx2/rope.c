@@ -41,6 +41,24 @@ q_error_code q_rope_f32_avx2(
     Q_VALIDATE_MULTIPLE_OR_RETURN(N, 8, Q_ERR_INVALID_SIZE);
     Q_VALIDATE_MULTIPLE_OR_RETURN(N, 2, Q_ERR_INVALID_SIZE); // Must be even
     
+    // Validação de Contrato de Layout (DEBUG apenas)
+    // Se model.c mudar o layout (remover duplicação), isso detecta o bug imediatamente
+    // Custo zero em RELEASE, mas previne corrupção silenciosa de inferência
+    #ifdef DEBUG
+    {
+        const uint32_t num_pairs = N / 2;
+        for (uint32_t i = 0; i < num_pairs; i++) {
+            if (cos[i*2] != cos[i*2+1] || sin[i*2] != sin[i*2+1]) {
+                fprintf(stderr, "FATAL: RoPE table corrupted/invalid layout at pair %u\n", i);
+                fprintf(stderr, "  cos[%u]=%f, cos[%u]=%f\n", i*2, cos[i*2], i*2+1, cos[i*2+1]);
+                fprintf(stderr, "  sin[%u]=%f, sin[%u]=%f\n", i*2, sin[i*2], i*2+1, sin[i*2+1]);
+                fprintf(stderr, "  Expected layout: [c0, c0, c1, c1, ...]\n");
+                abort();
+            }
+        }
+    }
+    #endif
+    
     // Process 4 pairs (8 floats) per iteration
     const uint32_t vec_count = N / 8;
     
