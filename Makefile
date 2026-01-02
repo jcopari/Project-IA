@@ -148,7 +148,7 @@ BENCHMARK_TARGET = tools/benchmark
 TEST_SRCS = $(wildcard $(TESTS_DIR)/*.c)
 TEST_TARGETS = $(TEST_SRCS:$(TESTS_DIR)/%.c=$(BUILD_DIR)/tests/%)
 
-.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-model-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-integration-e2e test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme test-llama-scratchpad test-llama-kv-cache test-llama-rope test-llama-token-embedding test-llama-free benchmark analyze analyze-cppcheck analyze-clang-tidy analyze-complete check-syntax
+.PHONY: all lib objects clean clean-objs clean-test-artifacts directories test test-memory test-dequantize test-matmul test-ops test-validation test-memory-adversarial test-model-overflow-adversarial test-utils test-avx-math test-llama-forward test-rmsnorm-adversarial test-rope-adversarial test-silu-adversarial test-softmax-adversarial test-dequantize-adversarial test-ops-integration test-tokenizer test-bpe-tokenizer test-llama-forward-adversarial test-tokenizer-adversarial test-memory-strategies test-llama-cleanup test-integration-e2e test-tokenizer-free-complete test-model-file-validation test-edge-cases-extreme test-llama-scratchpad test-llama-kv-cache test-llama-rope test-llama-token-embedding test-llama-free benchmark analyze analyze-cppcheck analyze-clang-tidy analyze-complete check-syntax
 
 # Target para compilar apenas objetos (sem executável) - útil para bibliotecas
 objects: directories $(OBJS)
@@ -380,6 +380,14 @@ test-tokenizer: directories $(BUILD_DIR)/tests/test_tokenizer
 	@echo "Executando teste de tokenizer..."
 	@$(BUILD_DIR)/tests/test_tokenizer tokenizer.bin || (rm -f model_dummy.qorus tokenizer.bin; exit 1)
 	@rm -f model_dummy.qorus tokenizer.bin 2>/dev/null || true
+
+test-bpe-tokenizer: directories $(BUILD_DIR)/tests/test_bpe_tokenizer
+	@echo "Executando testes de especificação BPE..."
+	@$(BUILD_DIR)/tests/test_bpe_tokenizer
+
+test-bpe-tokenizer-adversarial: directories $(BUILD_DIR)/tests/test_bpe_tokenizer_adversarial
+	@echo "Executando testes adversarial de BPE tokenizer..."
+	@$(BUILD_DIR)/tests/test_bpe_tokenizer_adversarial
 
 test-llama-forward-adversarial: directories $(BUILD_DIR)/tests/test_llama_forward_adversarial
 	@echo "Gerando modelo dummy..."

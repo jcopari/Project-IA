@@ -148,6 +148,9 @@ typedef struct {
     uint32_t merged_id;   // Resulting merged token ID
 } q_bpe_merge;
 
+// Forward declaration for hash table (internal to bpe.c)
+struct bpe_hash_table;
+
 // Tokenizer Structure (BPE - Byte Pair Encoding)
 typedef struct {
     // Vocabulary: Array of token strings (variable length)
@@ -157,6 +160,10 @@ typedef struct {
     // BPE Merges: Array of merge rules
     q_bpe_merge* merges;      // Array of BPE merge rules [num_merges]
     uint32_t num_merges;       // Number of BPE merges
+    
+    // Hash table for fast merge lookup (O(1) instead of O(m))
+    // Internal implementation in bpe.c, opaque pointer here
+    struct bpe_hash_table* merge_hash_table;  // NULL if num_merges == 0
     
     // Special Tokens
     uint32_t bos_token_id;     // Beginning of sequence token ID
