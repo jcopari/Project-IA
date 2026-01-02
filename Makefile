@@ -122,15 +122,22 @@ SRC_DIRS := $(shell find $(SRC_DIR) -type d 2>/dev/null)
 BUILD_SUBDIRS := $(patsubst $(SRC_DIR)/%,$(BUILD_DIR)/%,$(SRC_DIRS))
 
 # Detecção automática de arquivos fonte (qualquer .c em subdiretórios de src/)
-# Filtra arquivos de referência e testes, ordena para builds determinísticos
+# Filtra arquivos de referência, testes, e arquivos obsoletos/substituídos
+# Arquivos obsoletos: llama3.c (substituído por model.c), dummy_tokenizer.c (substituído por bpe.c)
 # Complexidade: O(n log n) - aceitável para detecção automática
 ALL_SRCS := $(shell find $(SRC_DIR) -name "*.c" -type f 2>/dev/null | \
-	grep -v "_ref.c" | grep -v "/test" | sort)
+	grep -v "_ref.c" | grep -v "/test" | \
+	grep -v "llama3\.c$$" | grep -v "dummy_tokenizer\.c$$" | \
+	grep -v "\.backup" | sort)
 
 # Validação: garantir que encontramos pelo menos alguns arquivos
 ifeq ($(ALL_SRCS),)
 	$(warning Nenhum arquivo .c encontrado em $(SRC_DIR))
 	ALL_SRCS := $(wildcard $(SRC_DIR)/**/*.c)
+	# Aplicar mesmos filtros de exclusão
+	ALL_SRCS := $(filter-out %_ref.c %/test/%, $(ALL_SRCS))
+	ALL_SRCS := $(filter-out %llama3.c %dummy_tokenizer.c, $(ALL_SRCS))
+	ALL_SRCS := $(filter-out %.backup, $(ALL_SRCS))
 endif
 
 OBJS = $(ALL_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
@@ -202,11 +209,12 @@ check-syntax:
 	@echo "✓ Sintaxe OK"
 
 # Target para análise estática (requer GCC 10+)
+# CRITICAL FIX: Usar 'objects' em vez de 'all' para não tentar criar executável (biblioteca sem main())
 # CRITICAL FIX: Retornar código de erro apropriado se análise encontrar problemas críticos
 analyze:
 	@echo "Executando análise estática (GCC analyzer)..."
 	@$(MAKE) clean
-	@$(MAKE) ANALYZE=1 all 2>&1 | tee static-analysis.log; \
+	@$(MAKE) ANALYZE=1 objects 2>&1 | tee static-analysis.log; \
 	ANALYZE_EXIT=$$?; \
 	if [ $$ANALYZE_EXIT -ne 0 ]; then \
 		echo "⚠ Compilação com análise estática falhou (exit code $$ANALYZE_EXIT)"; \
